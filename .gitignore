@@ -1,0 +1,15 @@
+.env
+.DS_Store
+node_modules/
+.next/
+.vinext/
+.wrangler/
+dist/
+coverage/
+*.tar
+*.zip
+*.log
+personallab.json
+personallab-*.json
+companions/energylab-0.3.2/
+companions/energylab-0.4.5/app/__pycache__/

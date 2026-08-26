@@ -1,0 +1,51 @@
+services:
+  personal-lab-api:
+    image: personal-lab-api:1.5.0
+    container_name: personal-lab-api
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      PORT: "8095"
+      DATA_FILE: /data/personallab.json
+      PAPERLESS_URL: ${PAPERLESS_URL}
+      PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
+      ANALYZER_URL: ${ANALYZER_URL:-}
+      HOME_ASSISTANT_URL: ${HOME_ASSISTANT_URL}
+      HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN}
+      ENERGYLAB_URL: ${ENERGYLAB_URL}
+      ENERGYLAB_USERNAME: ${ENERGYLAB_USERNAME:-}
+      ENERGYLAB_PASSWORD: ${ENERGYLAB_PASSWORD:-}
+      FINANZLAB_URL: ${FINANZLAB_URL}
+      FINANZLAB_HOUSEHOLD_ID: ${FINANZLAB_HOUSEHOLD_ID:-}
+      AUTO_SYNC_ENABLED: ${AUTO_SYNC_ENABLED:-true}
+      AUTO_SYNC_INTERVAL_MINUTES: ${AUTO_SYNC_INTERVAL_MINUTES:-15}
+      SYNC_ON_START: ${SYNC_ON_START:-true}
+    volumes:
+      - /DATA/AppData/personal-lab:/data
+    networks:
+      - personal-lab
+    security_opt:
+      - no-new-privileges:true
+
+  personal-lab-web:
+    image: personal-lab-web:1.5.0
+    container_name: personal-lab-web
+    restart: unless-stopped
+    depends_on:
+      personal-lab-api:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+      PERSONALLAB_API_URL: http://personal-lab-api:8095
+    ports:
+      - "${PERSONALLAB_BIND_ADDRESS:-192.168.1.100}:${PERSONALLAB_HOST_PORT:-8094}:3000"
+    networks:
+      - personal-lab
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  personal-lab:
+    name: personal-lab

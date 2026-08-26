@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "areas": [
+    {"id":"health","name":"Gesundheit & Befunde","description":"Befunde, Arztbriefe und gesundheitliche Unterlagen","tone":"teal","icon":"heart","subareas":[
+      {"id":"findings","name":"Befunde","hint":"Untersuchungen und Ergebnisse"},
+      {"id":"medical-letters","name":"Arztbriefe","hint":"Berichte von Praxen und Kliniken"},
+      {"id":"diagnoses","name":"Diagnosen","hint":"Diagnosen und Verlauf"},
+      {"id":"therapy","name":"Therapie & Reha","hint":"Behandlung, Reha und Therapie"},
+      {"id":"aids","name":"Hilfsmittel","hint":"Verordnungen und Versorgung"},
+      {"id":"disability","name":"Schwerbehinderung","hint":"Ausweis, Bescheide und Anträge"}
+    ]},
+    {"id":"work","name":"Arbeit","description":"Verträge, Gehalt und Unterlagen vom Arbeitgeber","tone":"blue","icon":"work","subareas":[
+      {"id":"contracts","name":"Verträge","hint":"Arbeits- und Änderungsverträge"},
+      {"id":"salary","name":"Gehaltsabrechnungen","hint":"Monatliche Abrechnungen"},
+      {"id":"tax-certificates","name":"Steuerbescheinigungen","hint":"Jährliche Lohnsteuerbescheinigungen"},
+      {"id":"sick-notes","name":"Arbeitsunfähigkeit","hint":"AU und Krankmeldungen"},
+      {"id":"references","name":"Zeugnisse","hint":"Arbeitszeugnisse und Nachweise"},
+      {"id":"employer-mail","name":"Arbeitgeber-Schriftverkehr","hint":"Briefe und Bescheinigungen"}
+    ]},
+    {"id":"finance","name":"Kredite & Finanzen","description":"Konten, Darlehen, Steuern und Zahlungen","tone":"sand","icon":"money","subareas":[
+      {"id":"accounts","name":"Konten","hint":"Konten und Kontoauszüge"},
+      {"id":"loans","name":"Kredite & Darlehen","hint":"Verträge und Abrechnungen"},
+      {"id":"tax","name":"Steuern","hint":"Bescheide und Erklärungen"},
+      {"id":"invoices","name":"Rechnungen & Belege","hint":"Käufe und Zahlungsnachweise"},
+      {"id":"cards","name":"Karten","hint":"Debit- und Kreditkarten"},
+      {"id":"other-finance","name":"Sonstiges","hint":"Weitere Finanzunterlagen"}
+    ]},
+    {"id":"insurance","name":"Versicherungen","description":"Policen, Beiträge, Laufzeiten und Schäden","tone":"violet","icon":"shield","subareas":[
+      {"id":"health-insurance","name":"Krankenversicherung","hint":"Kasse und Leistungen"},
+      {"id":"liability","name":"Haftpflicht","hint":"Verträge und Schäden"},
+      {"id":"household","name":"Hausrat","hint":"Police und Beiträge"},
+      {"id":"building","name":"Wohngebäude","hint":"Gebäude und Elementar"},
+      {"id":"vehicle-insurance","name":"Kfz-Versicherung","hint":"Fahrzeug und Schaden"},
+      {"id":"provision","name":"Vorsorge","hint":"Leben, Rente und Unfall"}
+    ]},
+    {"id":"vehicle","name":"Fahrzeug","description":"Kauf, Steuer, TÜV und Werkstatt","tone":"orange","icon":"car","subareas":[
+      {"id":"purchase","name":"Kauf & Finanzierung","hint":"Verträge und Fahrzeugbrief"},
+      {"id":"vehicle-tax","name":"Steuer","hint":"Kfz-Steuer und Zoll"},
+      {"id":"inspection","name":"TÜV & Prüfung","hint":"HU, AU und Berichte"},
+      {"id":"service","name":"Werkstatt & Wartung","hint":"Inspektion und Reparaturen"},
+      {"id":"tires","name":"Reifen","hint":"Räder und Einlagerung"},
+      {"id":"vehicle-other","name":"Sonstiges","hint":"Weitere Fahrzeugdokumente"}
+    ]},
+    {"id":"energy","name":"Energie","description":"Strom, Wasser, Gas und Photovoltaik aus EnergieLab","tone":"teal","icon":"energy","subareas":[
+      {"id":"electricity","name":"Strom","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
+      {"id":"water","name":"Wasser","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
+      {"id":"gas","name":"Gas","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
+      {"id":"pv","name":"Photovoltaik","hint":"Eigenverbrauch, Ersparnis, Historie und Zählerstand"}
+    ]},
+    {"id":"contracts","name":"Verträge","description":"Laufende private Verträge, Tarife und Kündigungsfristen","tone":"violet","icon":"file","subareas":[
+      {"id":"mobile","name":"Mobilfunk","hint":"Handyverträge, Tarife und Rechnungen"},
+      {"id":"internet","name":"Internet & Festnetz","hint":"Anschluss, Routermiete und Tarife"},
+      {"id":"subscriptions","name":"Abonnements","hint":"Streaming, Software und Mitgliedschaften"},
+      {"id":"services","name":"Dienstleistungen","hint":"Wartungs- und Serviceverträge"},
+      {"id":"other-contracts","name":"Sonstige Verträge","hint":"Weitere private Vertragsunterlagen"}
+    ]},
+    {"id":"property","name":"Haus","description":"Internet, Abgaben, Versicherungen und Versorgung rund ums Zuhause","tone":"green","icon":"house","subareas":[
+      {"id":"ownership","name":"Eigentum & Grundbuch","hint":"Notar und Grundbuch"},
+      {"id":"internet","name":"Internet & Festnetz","hint":"Anschluss, Anbieter und Rechnungen"},
+      {"id":"property-tax","name":"Grundsteuer","hint":"Grundsteuerbescheide und Zahlungen"},
+      {"id":"property-insurance","name":"Versicherungen","hint":"Hausrat, Gebäude und Elementar"},
+      {"id":"waste","name":"Müll & Entsorgung","hint":"Gebühren und Entsorgungsverträge"},
+      {"id":"water","name":"Wasser","hint":"Verträge, Gebühren und Abrechnungen"},
+      {"id":"electricity","name":"Strom","hint":"Hausanschluss, Verträge und Abrechnungen"},
+      {"id":"gas","name":"Gas","hint":"Verträge, Abschläge und Abrechnungen"},
+      {"id":"craft","name":"Handwerker & Wartung","hint":"Aufträge und Rechnungen"},
+      {"id":"property-other","name":"Sonstiges","hint":"Weitere Hausunterlagen"}
+    ]},
+    {"id":"hardware","name":"Hardware & Technik","description":"PC, NAS, Netzwerk und Geräte","tone":"slate","icon":"chip","subareas":[
+      {"id":"pc","name":"PC & Komponenten","hint":"Gaming-PC und Zubehör"},
+      {"id":"server","name":"NAS & Server","hint":"Synology, ZimaOS und Mini-PC"},
+      {"id":"network","name":"Netzwerk","hint":"Router, Switch und WLAN"},
+      {"id":"av","name":"TV & Audio","hint":"Fernseher und Heimkino"},
+      {"id":"mobile","name":"Mobilgeräte","hint":"Smartphone und Tablet"}
+    ]},
+    {"id":"correspondence","name":"Schriftverkehr","description":"Allgemeine Briefe, Nachweise und Mitteilungen","tone":"rose","icon":"mail","subareas":[
+      {"id":"authorities","name":"Behörden","hint":"Bescheide und Schreiben"},
+      {"id":"providers","name":"Anbieter","hint":"Verträge und Mitteilungen"},
+      {"id":"private","name":"Privat","hint":"Persönliche Korrespondenz"},
+      {"id":"proof","name":"Nachweise","hint":"Bescheinigungen und Belege"},
+      {"id":"uncategorized-mail","name":"Nicht weiter zugeordnet","hint":"Allgemeiner Schriftverkehr"}
+    ]}
+  ],
+  "documents": [],
+  "haSensors": [],
+  "lastSync": null,
+  "syncStatus": "idle",
+  "syncError": null
+}

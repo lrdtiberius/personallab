@@ -1,0 +1,31 @@
+PERSONALLAB 1.5.0 + ENERGIELAB 0.4.5 AUF ZIMAOS
+
+EnergieLab 0.4.5 ist enthalten. Es liefert PersonalLab seine bereits
+berechneten Dashboardwerte; PersonalLab berechnet Energiekosten nicht selbst.
+
+1. Paket nach /DATA/AppData/personal-lab-stack entpacken.
+
+2. Images bauen und als TAR exportieren:
+   cd /DATA/AppData/personal-lab-stack
+   chmod +x build-and-export.sh
+   ./build-and-export.sh
+
+3. Optionaler Import auf einem anderen Docker-Rechner:
+   docker load -i personallab-1.5.0-energylab-0.4.5-images.tar
+
+4. Im BESTEHENDEN EnergieLab-Stack nur das Image auf energylab:0.4.5
+   aendern und ohne "Re-pull image" aktualisieren. Volumes unveraendert lassen.
+   Danach pruefen:
+   curl -fsS http://192.168.1.100:8090/api/personallab
+
+5. Konfiguration anlegen:
+   cp -n .env.example .env
+   nano .env
+
+6. Datenspeicher vorbereiten und starten:
+   mkdir -p /DATA/AppData/personal-lab
+   chown 10001:10001 /DATA/AppData/personal-lab
+   docker compose --env-file .env -f compose.yaml up -d
+   docker compose --env-file .env -f compose.yaml ps
+
+Aufruf: http://192.168.1.100:8094
