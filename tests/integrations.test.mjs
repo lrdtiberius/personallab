@@ -126,6 +126,7 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
     cwd: new URL("..", import.meta.url),
     env: {
       ...process.env,
+      HOST: "127.0.0.1",
       PORT: port,
       DATA_FILE: dataFile,
       ENERGYLAB_URL: energy.url,
@@ -139,11 +140,11 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
   try {
     await waitForJson(`http://127.0.0.1:${port}/api/health`);
     const state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
-    assert.ok(state.areas.some(area => area.id === "energy"));
-    assert.ok(!state.areas.find(area => area.id === "property").subareas.some(subarea => subarea.id === "utilities"));
+    assert.equal(state.version, "2.5.7");
+    assert.ok(state.areas.find(area => area.id === "property").subareas.some(subarea => subarea.id === "utilities"));
     assert.deepEqual(
       { area: state.documents[0].area, subarea: state.documents[0].subarea },
-      { area: "property", subarea: "electricity" },
+      { area: "property", subarea: "utilities" },
     );
 
     const energyView = await waitForJson(`http://127.0.0.1:${port}/api/integrations/energy`);
@@ -167,7 +168,13 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
 });
 
 test("merges analyzer results with Paperless documents by Paperless ID", async () => {
+  const paperlessMutationMethods = [];
   const paperless = await serve((request, response) => {
+    if (request.method !== "GET") {
+      paperlessMutationMethods.push(request.method);
+      response.statusCode = 405;
+      return response.end("{}");
+    }
     response.setHeader("content-type", "application/json");
     const pages = {
       "/api/documents/?page_size=100": { results: [{ id: 42, title: "Monatsunterlage", correspondent: 3, document_type: null, tags: [8], created: "2026-08-01" }], next: null },
@@ -190,7 +197,7 @@ test("merges analyzer results with Paperless documents by Paperless ID", async (
   const port = await freePort();
   const child = spawn(process.execPath, ["local-api/server.mjs"], {
     cwd: new URL("..", import.meta.url),
-    env: { ...process.env, PORT: port, DATA_FILE: dataFile, PAPERLESS_URL: paperless.url, PAPERLESS_TOKEN: "test", ANALYZER_URL: analyzer.url, AUTO_SYNC_ENABLED: "false", SYNC_ON_START: "false" },
+    env: { ...process.env, HOST: "127.0.0.1", PORT: port, DATA_FILE: dataFile, PAPERLESS_URL: paperless.url, PAPERLESS_TOKEN: "test", ANALYZER_URL: analyzer.url, AUTO_SYNC_ENABLED: "false", SYNC_ON_START: "false" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   try {
@@ -209,6 +216,20 @@ test("merges analyzer results with Paperless documents by Paperless ID", async (
     assert.equal(state.documents[0].analysisSummary, "Jahresabrechnung für Stromlieferung und Zählerstand");
     assert.equal(state.documents[0].analysisConfidence, 0.97);
     assert.deepEqual({ area: state.documents[0].area, subarea: state.documents[0].subarea }, { area: "property", subarea: "electricity" });
+    const disableResponse = await fetch(`http://127.0.0.1:${port}/api/documents/42/disable`, { method: "POST" });
+    assert.equal(disableResponse.status, 200);
+    assert.equal((await disableResponse.json()).status, "disabled");
+    assert.deepEqual(paperlessMutationMethods, []);
+    state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
+    assert.deepEqual(state.documents, []);
+    assert.equal(state.disabledDocuments[0].id, 42);
+    const restoreResponse = await fetch(`http://127.0.0.1:${port}/api/documents/42/restore`, { method: "POST" });
+    assert.equal(restoreResponse.status, 200);
+    assert.equal((await restoreResponse.json()).status, "restored");
+    state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(state.documents[0].id, 42);
+    assert.deepEqual(state.disabledDocuments, []);
+    assert.deepEqual(paperlessMutationMethods, []);
   } finally {
     child.kill("SIGTERM");
     await Promise.race([new Promise(resolve => child.once("exit", resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);

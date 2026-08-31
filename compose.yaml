@@ -1,6 +1,6 @@
 services:
   personal-lab-api:
-    image: personal-lab-api:1.5.0
+    image: personal-lab-api:2.5.7
     container_name: personal-lab-api
     restart: unless-stopped
     environment:
@@ -28,7 +28,7 @@ services:
       - no-new-privileges:true
 
   personal-lab-web:
-    image: personal-lab-web:1.5.0
+    image: personal-lab-web:2.5.7
     container_name: personal-lab-web
     restart: unless-stopped
     depends_on:

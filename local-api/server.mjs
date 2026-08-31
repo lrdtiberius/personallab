@@ -2,9 +2,13 @@ import http from "node:http";
 import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { refreshContractStatuses } from "./contracts.mjs";
+import { readableGroup, sanitizeDocumentGroups } from "./groups.mjs";
+import { normalizePageLayouts } from "./layouts.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number.parseInt(process.env.PORT ?? "8095", 10);
+const host = process.env.HOST ?? "0.0.0.0";
 const dataFile = resolve(process.env.DATA_FILE ?? "/data/personallab.json");
 const paperlessUrl = (process.env.PAPERLESS_URL ?? "").replace(/\/$/, "");
 const paperlessToken = process.env.PAPERLESS_TOKEN ?? "";
@@ -24,38 +28,87 @@ let state;
 let saveChain = Promise.resolve();
 let syncPromise = null;
 
+function tileUid(areaId, tile) {
+  return tile?.uid || `tile:${areaId}:${tile?.id ?? "unknown"}`;
+}
+
+function normalizeFinanceAccountAssignments(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, ids]) => key && Array.isArray(ids))
+    .map(([key, ids]) => [key, [...new Set(ids.map(String))]]));
+}
+
+function normalizeDisabledDocuments(value, legacyIds = []) {
+  const documents = Array.isArray(value) ? value.filter(document => document && Number.isInteger(Number(document.id)) && Number(document.id) > 0) : [];
+  const known = new Set(documents.map(document => Number(document.id)));
+  for (const id of legacyIds ?? []) {
+    const number = Number(id);
+    if (!Number.isInteger(number) || number <= 0 || known.has(number)) continue;
+    documents.push({ id: number, title: `Paperless #${number}`, correspondent: "", type: "", date: "", area: "", subarea: "", tags: [] });
+    known.add(number);
+  }
+  return [...new Map(documents.map(document => [Number(document.id), { ...document, id: Number(document.id) }])).values()];
+}
+
+function normalizeFinanceDataSelections(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, ids]) => key && Array.isArray(ids))
+    .map(([key, ids]) => [key, [...new Set(ids.map(String))]]));
+}
+
+function normalizeEnergyProviderAssignments(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, providers]) => key && Array.isArray(providers))
+    .map(([key, providers]) => [key, [...new Set(providers.map(String).map(provider => provider.trim()).filter(Boolean))]]));
+}
+
+function normalizeEnergyMetricSelections(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return Object.fromEntries(Object.entries(value)
+    .filter(([key, ids]) => key && Array.isArray(ids))
+    .map(([key, ids]) => [key, [...new Set(ids.map(String))]]));
+}
+
+function migrateV2(snapshot, defaults) {
+  const areas = Array.isArray(snapshot.areas) && snapshot.areas.length ? snapshot.areas : defaults.areas;
+  const roots = new Map();
+  for (const area of areas) for (const root of area.subareas ?? []) roots.set(`${area.id}:${root.id}`, tileUid(area.id, root));
+  const documents = refreshContractStatuses(sanitizeDocumentGroups((Array.isArray(snapshot.documents) ? snapshot.documents : []).map(document => ({
+    ...document,
+    tileId: document.tileId || roots.get(`${document.area}:${document.subarea}`) || "",
+  }))));
+  const migrated = {
+    ...defaults,
+    ...snapshot,
+    version: "2.5.7",
+    areas,
+    documents,
+    correspondents: Array.isArray(snapshot.correspondents) ? snapshot.correspondents : [],
+    disabledDocuments: normalizeDisabledDocuments(snapshot.disabledDocuments, snapshot.deletedPaperlessDocumentIds),
+    pageLayouts: normalizePageLayouts(snapshot.pageLayouts, snapshot.financeLayout ?? defaults.financeLayout),
+    financeAccountAssignments: normalizeFinanceAccountAssignments(snapshot.financeAccountAssignments),
+    financeDataSelections: normalizeFinanceDataSelections(snapshot.financeDataSelections),
+    energyProviderAssignments: normalizeEnergyProviderAssignments(snapshot.energyProviderAssignments),
+    energyMetricSelections: normalizeEnergyMetricSelections(snapshot.energyMetricSelections),
+    haSensors: Array.isArray(snapshot.haSensors) ? snapshot.haSensors : [],
+    migration: { ...(snapshot.migration ?? {}), personalLab2: true, personalLab22: true, personalLab23: true, personalLab24: true, personalLab25: true, personalLab253: true, personalLab254: true, personalLab255: true, personalLab256: true, personalLab257: true },
+  };
+  delete migrated.financeLayout;
+  delete migrated.deletedPaperlessDocumentIds;
+  return migrated;
+}
+
 async function initialState() {
   const defaults = JSON.parse(await readFile(resolve(here, "default-state.json"), "utf8"));
   try {
     const stored = JSON.parse(await readFile(dataFile, "utf8"));
-    const storedAreas = Array.isArray(stored.areas) ? stored.areas : [];
-    const defaultIds = new Set(defaults.areas.map(area => area.id));
-    const areas = defaults.areas.map(defaultArea => {
-      const saved = storedAreas.find(area => area.id === defaultArea.id);
-      if (!saved) return defaultArea;
-      const savedSubareas = Array.isArray(saved.subareas) ? saved.subareas : [];
-      const defaultSubIds = new Set(defaultArea.subareas.map(subarea => subarea.id));
-      return {
-        ...defaultArea,
-        ...saved,
-        name: defaultArea.id === "property" && saved.name === "Haus & Immobilie" ? defaultArea.name : (saved.name ?? defaultArea.name),
-        description: defaultArea.id === "property" && saved.description === "Eigentum, Abgaben, Wartung und Versorgung" ? defaultArea.description : (saved.description ?? defaultArea.description),
-        subareas: [
-          ...defaultArea.subareas.map(defaultSubarea => ({ ...defaultSubarea, ...(savedSubareas.find(subarea => subarea.id === defaultSubarea.id) ?? {}) })),
-          ...savedSubareas.filter(subarea => !defaultSubIds.has(subarea.id) && !(defaultArea.id === "property" && subarea.id === "utilities")),
-        ],
-      };
-    });
-    areas.push(...storedAreas.filter(area => !defaultIds.has(area.id)));
-    const documents = (stored.documents ?? []).map(document => {
-      if (document.area !== "property" || document.subarea !== "utilities" || document.assignmentSource === "manual") return document;
-      const suggestion = classifyDocument(document, document.correspondent, document.type, document.tags ?? []);
-      return suggestion.area && suggestion.subarea ? { ...document, ...suggestion } : document;
-    });
-    return { ...defaults, ...stored, areas, documents, haSensors: stored.haSensors ?? [] };
+    return migrateV2(stored, defaults);
   } catch (error) {
     if (error?.code !== "ENOENT") console.error("State konnte nicht gelesen werden:", error);
-    return defaults;
+    return migrateV2(defaults, defaults);
   }
 }
 
@@ -108,6 +161,27 @@ async function proxyPaperlessDocument(response, documentId, kind) {
     "content-disposition": "inline",
   });
   response.end(body);
+}
+
+async function disablePersonalLabDocument(response, documentId) {
+  const id = Number(documentId);
+  const document = state.documents.find(item => Number(item.id) === id);
+  const alreadyDisabled = (state.disabledDocuments ?? []).find(item => Number(item.id) === id);
+  if (!document && !alreadyDisabled) return json(response, 404, { error: "Dokument wurde in PersonalLab nicht gefunden" });
+  state.documents = state.documents.filter(item => Number(item.id) !== id);
+  state.disabledDocuments = normalizeDisabledDocuments([...(state.disabledDocuments ?? []), document ?? alreadyDisabled]);
+  await persist();
+  return json(response, 200, { status: alreadyDisabled ? "already-disabled" : "disabled", document: document ?? alreadyDisabled });
+}
+
+async function restorePersonalLabDocument(response, documentId) {
+  const id = Number(documentId);
+  const document = (state.disabledDocuments ?? []).find(item => Number(item.id) === id);
+  if (!document) return json(response, 404, { error: "Deaktiviertes Dokument wurde nicht gefunden" });
+  state.disabledDocuments = (state.disabledDocuments ?? []).filter(item => Number(item.id) !== id);
+  if (!state.documents.some(item => Number(item.id) === id)) state.documents = refreshContractStatuses([document, ...state.documents]);
+  await persist();
+  return json(response, 200, { status: "restored", document });
 }
 
 async function fetchPages(endpoint, headers) {
@@ -219,8 +293,10 @@ async function syncPaperless() {
   const tagNames = new Map(tags.map(item => [Number(item.id), item.name ?? ""]));
   const analyzerByPaperlessId = new Map(analyzerDocuments.map(item => [Number(item.paperless_id), item]));
   const existing = new Map(state.documents.map(item => [Number(item.id), item]));
-  const documents = rawDocuments.map(item => {
+  const disabledDocumentIds = new Set((state.disabledDocuments ?? []).map(item => Number(item.id)));
+  const documents = rawDocuments.filter(item => !disabledDocumentIds.has(Number(item.id))).map(item => {
     const prior = existing.get(Number(item.id));
+    const protectedAssignment = Boolean(prior?.area && prior?.subarea && !["rule", "unassigned"].includes(prior?.assignmentSource));
     const correspondent = referenceName(item.correspondent, correspondentNames);
     const documentType = referenceName(item.document_type, typeNames);
     const documentTags = (item.tags ?? []).map(tag => referenceName(tag, tagNames)).filter(Boolean);
@@ -242,9 +318,18 @@ async function syncPaperless() {
       date: String(item.created ?? item.document_date ?? item.added ?? "").slice(0, 10),
       added: String(item.added ?? "").slice(0, 19),
       modified: String(item.modified ?? "").slice(0, 19),
-      area: prior?.assignmentSource === "manual" ? prior.area : suggested.area,
-      subarea: prior?.assignmentSource === "manual" ? prior.subarea : suggested.subarea,
-      assignmentSource: prior?.assignmentSource === "manual" ? "manual" : suggested.assignmentSource,
+      area: protectedAssignment ? prior.area : suggested.area,
+      subarea: protectedAssignment ? prior.subarea : suggested.subarea,
+      tileId: protectedAssignment ? (prior.tileId ?? "") : "",
+      group: protectedAssignment ? readableGroup(prior.group, effectiveCorrespondent || prior.correspondent) : (effectiveCorrespondent || readableGroup(prior?.group, prior?.correspondent) || ""),
+      assignmentSource: protectedAssignment ? prior.assignmentSource : suggested.assignmentSource,
+      contractStatus: prior?.contractStatus,
+      contractStatusManual: prior?.contractStatusManual,
+      contractStart: prior?.contractStart,
+      contractEnd: prior?.contractEnd,
+      cancellationDeadline: prior?.cancellationDeadline,
+      autoRenew: prior?.autoRenew,
+      contractNumber: prior?.contractNumber,
       isNew: prior ? false : true,
       present: true,
     };
@@ -252,7 +337,8 @@ async function syncPaperless() {
   const seen = new Set(documents.map(item => item.id));
   for (const prior of state.documents) if (!seen.has(Number(prior.id))) documents.push({ ...prior, present: false });
   documents.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.id - a.id);
-  state.documents = documents;
+  state.documents = refreshContractStatuses(documents);
+  state.correspondents = [...new Set([...(state.correspondents ?? []), ...correspondents.map(item => item.name ?? ""), ...documents.map(item => item.correspondent ?? "")])].filter(Boolean).sort((a, b) => a.localeCompare(b, "de"));
   state.lastSync = new Date().toISOString();
   state.syncStatus = "idle";
   state.syncError = null;
@@ -470,18 +556,40 @@ state = await initialState();
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   try {
-    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "1.5.0", documents: state.documents.length });
+    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "2.5.7", documents: state.documents.length });
     const documentAsset = url.pathname.match(/^\/api\/documents\/(\d+)\/(thumbnail|preview)$/);
     if (request.method === "GET" && documentAsset) return proxyPaperlessDocument(response, documentAsset[1], documentAsset[2]);
-    if (request.method === "GET" && url.pathname === "/api/state") return json(response, 200, { ...state, config: { paperless: Boolean(paperlessUrl && paperlessToken), paperlessUrl, analyzer: Boolean(analyzerUrl), analyzerUrl, homeAssistant: Boolean(haUrl && haToken), homeAssistantUrl: haUrl, energyLab: Boolean(energyLabUrl), financeLab: Boolean(financeLabUrl), autoSync, syncMinutes } });
+    const documentDisable = url.pathname.match(/^\/api\/documents\/(\d+)\/disable\/?$/);
+    if (request.method === "POST" && documentDisable) return disablePersonalLabDocument(response, documentDisable[1]);
+    const documentRestore = url.pathname.match(/^\/api\/documents\/(\d+)\/restore\/?$/);
+    if (request.method === "POST" && documentRestore) return restorePersonalLabDocument(response, documentRestore[1]);
+    if (request.method === "GET" && url.pathname === "/api/state") {
+      state.documents = refreshContractStatuses(state.documents);
+      return json(response, 200, { ...state, config: { paperless: Boolean(paperlessUrl && paperlessToken), paperlessUrl, analyzer: Boolean(analyzerUrl), analyzerUrl, homeAssistant: Boolean(haUrl && haToken), homeAssistantUrl: haUrl, energyLab: Boolean(energyLabUrl), financeLab: Boolean(financeLabUrl), autoSync, syncMinutes } });
+    }
     if (request.method === "PUT" && url.pathname === "/api/state") {
       const incoming = await bodyJson(request);
       if (!Array.isArray(incoming.areas) || !Array.isArray(incoming.documents)) return json(response, 400, { error: "Ungültige Daten" });
       state.areas = incoming.areas;
-      state.documents = incoming.documents;
+      const disabledDocumentIds = new Set((state.disabledDocuments ?? []).map(document => Number(document.id)));
+      state.documents = refreshContractStatuses(sanitizeDocumentGroups(incoming.documents.filter(document => !disabledDocumentIds.has(Number(document.id)))));
+      state.pageLayouts = normalizePageLayouts(incoming.pageLayouts ?? state.pageLayouts, incoming.financeLayout ?? state.financeLayout);
+      if (incoming.financeAccountAssignments && typeof incoming.financeAccountAssignments === "object") state.financeAccountAssignments = normalizeFinanceAccountAssignments(incoming.financeAccountAssignments);
+      if (incoming.financeDataSelections && typeof incoming.financeDataSelections === "object") state.financeDataSelections = normalizeFinanceDataSelections(incoming.financeDataSelections);
+      if (incoming.energyProviderAssignments && typeof incoming.energyProviderAssignments === "object") state.energyProviderAssignments = normalizeEnergyProviderAssignments(incoming.energyProviderAssignments);
+      if (incoming.energyMetricSelections && typeof incoming.energyMetricSelections === "object") state.energyMetricSelections = normalizeEnergyMetricSelections(incoming.energyMetricSelections);
+      if (Array.isArray(incoming.correspondents)) state.correspondents = incoming.correspondents;
       if (Array.isArray(incoming.haSensors)) state.haSensors = incoming.haSensors;
       await persist();
       return json(response, 200, { status: "saved" });
+    }
+    if (request.method === "POST" && url.pathname === "/api/documents/assign") {
+      const incoming = await bodyJson(request);
+      if (!Array.isArray(incoming.ids) || !incoming.area || !incoming.subarea) return json(response, 400, { error: "ids, area und subarea werden benötigt" });
+      const ids = new Set(incoming.ids.map(Number));
+      state.documents = state.documents.map(document => ids.has(Number(document.id)) ? { ...document, area: String(incoming.area), subarea: String(incoming.subarea), tileId: String(incoming.tileId ?? ""), group: String(incoming.group ?? ""), assignmentSource: "manual" } : document);
+      await persist();
+      return json(response, 200, { status: "saved", assigned: ids.size });
     }
     if (request.method === "POST" && url.pathname === "/api/sync") {
       if (syncPromise) return json(response, 202, { status: "running" });
@@ -506,8 +614,8 @@ const server = http.createServer(async (request, response) => {
   }
 });
 
-server.listen(port, "0.0.0.0", () => {
-  console.log(`PersonalLab API läuft auf Port ${port}`);
+server.listen(port, host, () => {
+  console.log(`PersonalLab API läuft auf ${host}:${port}`);
   if (syncOnStart && paperlessUrl && paperlessToken) startSync().catch(error => console.error("Startabgleich fehlgeschlagen:", error.message));
   if (autoSync && paperlessUrl && paperlessToken) setInterval(() => startSync().catch(error => console.error("Automatischer Abgleich fehlgeschlagen:", error.message)), syncMinutes * 60 * 1000).unref();
 });

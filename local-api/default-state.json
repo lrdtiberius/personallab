@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": "2.5.7",
   "areas": [
     {"id":"health","name":"Gesundheit & Befunde","description":"Befunde, Arztbriefe und gesundheitliche Unterlagen","tone":"teal","icon":"heart","subareas":[
       {"id":"findings","name":"Befunde","hint":"Untersuchungen und Ergebnisse"},
@@ -82,6 +82,16 @@
     ]}
   ],
   "documents": [],
+  "disabledDocuments": [],
+  "correspondents": [],
+  "pageLayouts": {
+    "finance": {"blocks":[{"id":"integration","visible":true},{"id":"navigation","visible":true},{"id":"documents","visible":true}]},
+    "energy": {"blocks":[{"id":"integration","visible":true},{"id":"navigation","visible":true},{"id":"documents","visible":true}]}
+  },
+  "financeAccountAssignments": {},
+  "financeDataSelections": {},
+  "energyProviderAssignments": {},
+  "energyMetricSelections": {},
   "haSensors": [],
   "lastSync": null,
   "syncStatus": "idle",

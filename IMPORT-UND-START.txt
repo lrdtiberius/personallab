@@ -1,4 +1,4 @@
-PERSONALLAB 1.5.0 + ENERGIELAB 0.4.5 AUF ZIMAOS
+PERSONALLAB 2.5.7 + ENERGIELAB 0.4.5 AUF ZIMAOS
 
 EnergieLab 0.4.5 ist enthalten. Es liefert PersonalLab seine bereits
 berechneten Dashboardwerte; PersonalLab berechnet Energiekosten nicht selbst.
@@ -11,7 +11,7 @@ berechneten Dashboardwerte; PersonalLab berechnet Energiekosten nicht selbst.
    ./build-and-export.sh
 
 3. Optionaler Import auf einem anderen Docker-Rechner:
-   docker load -i personallab-1.5.0-energylab-0.4.5-images.tar
+   docker load -i personallab-2.5.7-energylab-0.4.5-images.tar
 
 4. Im BESTEHENDEN EnergieLab-Stack nur das Image auf energylab:0.4.5
    aendern und ohne "Re-pull image" aktualisieren. Volumes unveraendert lassen.
