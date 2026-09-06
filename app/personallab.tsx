@@ -23,6 +23,7 @@ type Area = {
 type DocumentItem = {
   id: number;
   title: string;
+  sourceTitle?: string;
   correspondent: string;
   type: string;
   date: string;
@@ -42,9 +43,16 @@ type DocumentItem = {
   contractNumber?: string;
   analysisSummary?: string;
   analysisConfidence?: number | null;
+  presentationTitle?: string;
+  presentationSummary?: string;
+  analysisKeywords?: string[];
+  analysisCategory?: string;
+  analysisSearchText?: string;
   tags?: string[];
 };
-type AppConfig = { paperless: boolean; paperlessUrl: string; analyzer: boolean; analyzerUrl: string; homeAssistant: boolean; homeAssistantUrl: string; energyLab: boolean; financeLab: boolean; autoSync: boolean; syncMinutes: number };
+type AppConfig = { paperless: boolean; paperlessUrl: string; analyzer: boolean; analyzerUrl: string; rag: boolean; ragUrl: string; homeAssistant: boolean; homeAssistantUrl: string; energyLab: boolean; financeLab: boolean; autoSync: boolean; syncMinutes: number };
+type RagSource = { documentId: number; title: string; correspondent: string; documentType: string; documentDate: string; excerpt: string; score: number };
+type RagSearchState = { status: "idle" | "loading" | "done" | "error"; answer: string; sources: RagSource[] };
 type HASensor = { entityId: string; name: string; state: string; unit: string; icon: string; updated: string };
 type DocumentScope = "all" | "unassigned" | "new";
 type IconName = "home" | "file" | "grid" | "pulse" | "settings" | "search" | "sync" | "heart" | "work" | "money" | "shield" | "car" | "house" | "chip" | "mail" | "energy" | "inbox" | "clock" | "open" | "back" | "next" | "close" | "check" | "edit" | "plus" | "trash" | "up" | "down" | "move";
@@ -121,7 +129,7 @@ const hierarchyChoice = (area: Area | undefined, tileId?: string, rootId?: strin
   const selection = findTreeSelection(area, tileId || rootId || null);
   return selection ? { rootId: selection.root.id, tileId: nodeUid(area.id, selection.node), path: selection.path } : null;
 };
-const documentSearchText = (doc: DocumentItem) => `${friendlyDocumentTitle(doc)} ${doc.title} ${doc.correspondent} ${doc.type} ${doc.analysisSummary ?? ""}`.toLowerCase();
+const documentSearchText = (doc: DocumentItem) => `${friendlyDocumentTitle(doc)} ${doc.title} ${doc.correspondent} ${doc.type} ${doc.presentationTitle ?? ""} ${doc.presentationSummary ?? ""} ${doc.analysisSummary ?? ""} ${(doc.analysisKeywords ?? []).join(" ")} ${doc.analysisCategory ?? ""} ${doc.analysisSearchText ?? ""}`.toLowerCase();
 const documentCorrespondentLabel = (value: string) => cleanCorrespondent(value);
 const documentTypeLabel = (value: string) => !value.trim() || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(value.trim()) ? "Dokumenttyp offen" : value.trim();
 
@@ -210,10 +218,11 @@ const AREA_DATA: Area[] = [
   },
   {
     id: "energy", name: "Energie", count: 39,
-    description: "Strom, Wasser, Gas und Photovoltaik aus EnergieLab", tone: "teal", icon: "energy",
+    description: "Strom, Gas, Wasser, Abwasser und Photovoltaik aus EnergieLab", tone: "teal", icon: "energy",
     subareas: [
       { id: "electricity", name: "Strom", count: 14, hint: "Verbrauch, Vertrag, Abschlag und Zählerstand" },
       { id: "water", name: "Wasser", count: 7, hint: "Verbrauch, Vertrag, Abschlag und Zählerstand" },
+      { id: "wastewater", name: "Abwasser", count: 0, hint: "Wasserverbrauch, eigener Vertrag, Zahlungen und Kosten" },
       { id: "gas", name: "Gas", count: 11, hint: "Verbrauch, Vertrag, Abschlag und Zählerstand" },
       { id: "pv", name: "Photovoltaik", count: 7, hint: "Eigenverbrauch, Ersparnis, Historie und Zählerstand" },
     ],
@@ -324,7 +333,17 @@ function Header({ screen, navigate, editMode, toggleEdit }: { screen: Screen; na
 }
 
 function SearchBox({ query, setQuery }: { query: string; setQuery: (value: string) => void }) {
-  return <div className="searchBox compactSearch"><Icon name="search" size={17}/><input id="globalDocumentSearch" aria-label="Alle Dokumente durchsuchen" value={query} onChange={event => setQuery(event.target.value)} placeholder="Alle Dokumente durchsuchen …"/>{query ? <button type="button" className="searchClear" onClick={() => setQuery("")} aria-label="Suche löschen"><Icon name="close" size={14}/></button> : <kbd>⌘ K</kbd>}</div>;
+  const [draft, setDraft] = useState(query);
+  useEffect(() => setDraft(query), [query]);
+  const submit = () => {
+    const next = draft.trim();
+    if (next.length >= 2) setQuery(next);
+  };
+  const clear = () => {
+    setDraft("");
+    setQuery("");
+  };
+  return <form className="searchBox compactSearch" onSubmit={event => { event.preventDefault(); submit(); }}><Icon name="search" size={17}/><input id="globalDocumentSearch" aria-label="Frage oder Suchbegriff eingeben" value={draft} onChange={event => setDraft(event.target.value)} placeholder="Frage eingeben und mit Enter suchen …"/>{draft ? <button type="button" className="searchClear" onClick={clear} aria-label="Suche löschen"><Icon name="close" size={14}/></button> : <kbd>⌘ K</kbd>}<button type="submit" className="searchSubmit" disabled={draft.trim().length < 2}>Suchen</button></form>;
 }
 
 function HierarchySelectors({ area, value, change, prefix = "" }: { area?: Area; value: HierarchyChoice | null; change: (choice: HierarchyChoice | null) => void; prefix?: string }) {
@@ -421,12 +440,52 @@ function DocumentList({ title, subtitle, items, onOpen, editMode, selected, setS
   </section>;
 }
 
-function SearchResults({ documents, query, setQuery, analyzer, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; query: string; setQuery: (value: string) => void; analyzer: boolean; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void }) {
-  const results = useMemo(() => searchDocuments(documents.map(document => ({ ...document, searchTitle: friendlyDocumentTitle(document) })), query), [documents, query]);
+function SearchResults({ documents, query, searchRevision, setQuery, analyzer, rag, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; query: string; searchRevision: number; setQuery: (value: string) => void; analyzer: boolean; rag: boolean; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void }) {
+  const localResults = useMemo(() => searchDocuments(documents.map(document => ({ ...document, searchTitle: friendlyDocumentTitle(document) })), query), [documents, query]);
+  const [ragSearch, setRagSearch] = useState<RagSearchState>({ status: "idle", answer: "", sources: [] });
+  useEffect(() => {
+    const searchQuery = query.trim();
+    if (!rag || searchQuery.length < 2) {
+      setRagSearch({ status: "idle", answer: "", sources: [] });
+      return;
+    }
+    const controller = new AbortController();
+    setRagSearch({ status: "loading", answer: "", sources: [] });
+    fetch("/api/search", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: searchQuery }), signal: controller.signal })
+      .then(async response => {
+        if (!response.ok) throw new Error("Paperless KI-Suche nicht erreichbar");
+        const payload = await response.json() as { answer?: string; sources?: RagSource[] };
+        setRagSearch({ status: "done", answer: String(payload.answer ?? ""), sources: Array.isArray(payload.sources) ? payload.sources : [] });
+      })
+      .catch(error => {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setRagSearch({ status: "error", answer: "", sources: [] });
+      });
+    return () => controller.abort();
+  }, [query, rag, searchRevision]);
+  const results = useMemo(() => {
+    if (!rag || ragSearch.status === "error") return localResults;
+    if (ragSearch.status !== "done") return [];
+    const byId = new Map(documents.map(document => [document.id, document]));
+    const seen = new Set<number>();
+    return ragSearch.sources.flatMap(source => {
+      const document = byId.get(source.documentId);
+      if (!document || seen.has(document.id)) return [];
+      seen.add(document.id);
+      return [{ ...document, presentationSummary: source.excerpt || document.presentationSummary }];
+    });
+  }, [documents, localResults, rag, ragSearch]);
+  const statusText = ragSearch.status === "loading" ? "Paperless KI-Suche läuft …" : ragSearch.status === "done" ? "Antwort der Paperless KI-Suche" : ragSearch.status === "error" ? "Lokale Ausweichsuche" : rag ? "Paperless KI-Suche bereit" : analyzer ? "KI-Metadaten verbunden" : "Lokale Suche";
+  const statusActive = ragSearch.status !== "error" && (rag || analyzer);
+  const resultSubtitle = rag && ragSearch.status === "done" ? `${results.length} ${results.length === 1 ? "Quelldokument" : "Quelldokumente"} der Paperless KI-Suche` : `${results.length} ${results.length === 1 ? "Treffer" : "Treffer"} in der gesamten Ablage`;
   return <>
     <SearchBox query={query} setQuery={setQuery}/>
-    <section className="searchResultsIntro"><div><p className="eyebrow">SUCHE IN ALLEN BEREICHEN</p><h1>Treffer für „{query.trim()}“</h1><p>Titel, Korrespondent, Dokumenttyp und die KI-Inhaltsangabe werden gemeinsam durchsucht. Ähnliche Begriffe und kleine Tippfehler werden berücksichtigt.</p></div><span className={analyzer ? "aiSearchStatus active" : "aiSearchStatus"}><Icon name={analyzer ? "check" : "search"} size={15}/>{analyzer ? "KI-Inhalte verbunden" : "Lokale Suche"}</span></section>
-    <DocumentList title="Suchergebnisse" subtitle={`${results.length} ${results.length === 1 ? "Treffer" : "Treffer"} in der gesamten Ablage`} items={results} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={sortDirection} setSortDirection={setSortDirection}/>
+    <section className="searchResultsIntro"><div><p className="eyebrow">SUCHE IN ALLEN BEREICHEN</p><h1>Treffer für „{query.trim()}“</h1><p>Die Frage wird erst nach Enter oder einem Klick auf „Suchen“ an den vorhandenen Paperless-KI-Suchcontainer übermittelt. Seine Antwort, Quellenreihenfolge und Textausschnitte werden unverändert übernommen.</p></div><span className={statusActive ? "aiSearchStatus active" : "aiSearchStatus"}><Icon name={ragSearch.status === "loading" ? "sync" : statusActive ? "check" : "search"} size={15}/>{statusText}</span></section>
+    {ragSearch.status === "done" && ragSearch.answer && <section className="ragAnswerCard" aria-live="polite"><span className="ragAnswerIcon"><Icon name="search" size={18}/></span><div><p className="eyebrow">ANTWORT DER PAPERLESS KI-SUCHE</p><p>{ragSearch.answer}</p><small>{ragSearch.sources.length} {ragSearch.sources.length === 1 ? "Quelldokument" : "Quelldokumente"} aus Qdrant und Ollama</small></div></section>}
+    {ragSearch.status === "loading"
+      ? <section className="ragLoadingCard" aria-live="polite"><Icon name="sync" size={20}/><div><strong>Antwort wird erstellt</strong><span>Die Paperless KI-Suche durchsucht deine lokal gespeicherten Dokumente.</span></div></section>
+      : <DocumentList title="Suchergebnisse" subtitle={resultSubtitle} items={results} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={sortDirection} setSortDirection={setSortDirection}/>
+    }
   </>;
 }
 
@@ -802,6 +861,8 @@ function Settings({ config, documentCount, disabledDocuments, sensorCount, lastS
     <section className="pageIntro"><div><p className="eyebrow">PERSONALLAB</p><h1>Einstellungen</h1><p>Verbindungen, Synchronisation und Bereiche verwalten.</p></div></section>
     <div className="settingsList">
       <article><span className="settingIcon paperless">P</span><div><h2>Paperless-NGX</h2><p>Dokumente und Metadaten werden ausschließlich gelesen. Deaktivierungen gelten nur für PersonalLab.</p><small className={config.paperless ? "connected" : "disconnected"}><i/>{config.paperless ? `Verbunden · ${documentCount.toLocaleString("de-DE")} Dokumente` : "Nicht konfiguriert"}</small></div>{config.paperlessUrl && <button className="quietButton" onClick={() => window.open(config.paperlessUrl, "_blank", "noopener,noreferrer")}>Öffnen</button>}</article>
+      <article><span className="settingIcon"><Icon name="file"/></span><div><h2>Digital-Akte-Analyzer</h2><p>Ollama erzeugt lesbare Titel, Beschreibungen und strukturierte Suchbegriffe.</p><small className={config.analyzer ? "connected" : "disconnected"}><i/>{config.analyzer ? "Verbunden · lokale KI-Metadaten" : "Nicht konfiguriert"}</small></div><span className={config.analyzer ? "statusTag active" : "statusTag"}>{config.analyzer ? "Aktiv" : "Aus"}</span></article>
+      <article><span className="settingIcon"><Icon name="search"/></span><div><h2>Paperless RAG</h2><p>Qdrant und Ollama durchsuchen den vollständigen Dokumentinhalt semantisch.</p><small className={config.rag ? "connected" : "disconnected"}><i/>{config.rag ? "Verbunden · lokale Inhaltssuche" : "Nicht konfiguriert"}</small></div>{config.ragUrl ? <button className="quietButton" onClick={() => window.open(config.ragUrl, "_blank", "noopener,noreferrer")}>Öffnen</button> : <span className="statusTag">Aus</span>}</article>
       <article><span className="settingIcon"><Icon name="trash"/></span><div><h2>Deaktivierte Dokumente</h2><p>Diese Dokumente bleiben in Paperless erhalten, werden aber in PersonalLab nicht mehr angezeigt.</p><small>{disabledDocuments.length.toLocaleString("de-DE")} {disabledDocuments.length === 1 ? "Dokument deaktiviert" : "Dokumente deaktiviert"}</small></div><button className="quietButton" disabled={!disabledDocuments.length} onClick={() => setDisabledPicker(true)}>Verwalten</button></article>
       <article><span className="settingIcon"><Icon name="energy"/></span><div><h2>EnergieLab</h2><p>Verbrauch, Kosten, Verträge, Abschläge und Zählerstände.</p><small className={config.energyLab ? "connected" : "disconnected"}><i/>{config.energyLab ? "Verbunden · nur lesend" : "Nicht konfiguriert"}</small></div><span className={config.energyLab ? "statusTag active" : "statusTag"}>{config.energyLab ? "Aktiv" : "Aus"}</span></article>
       <article><span className="settingIcon"><Icon name="money"/></span><div><h2>FinanzLab</h2><p>Kontostände, offene Kredite und kommende Raten.</p><small className={config.financeLab ? "connected" : "disconnected"}><i/>{config.financeLab ? "Verbunden · nur lesend" : "Nicht konfiguriert"}</small></div><span className={config.financeLab ? "statusTag active" : "statusTag"}>{config.financeLab ? "Aktiv" : "Aus"}</span></article>
@@ -900,6 +961,7 @@ export default function PersonalLab() {
   const [areaId, setAreaId] = useState<string | null>(null);
   const [subarea, setSubarea] = useState<string | null>(null);
   const [query, setQuery] = useState("");
+  const [searchRevision, setSearchRevision] = useState(0);
   const [document, setDocument] = useState<DocumentItem | null>(null);
   const [documentEditor, setDocumentEditor] = useState<DocumentItem | null>(null);
   const [editMode, setEditMode] = useState(false);
@@ -911,7 +973,7 @@ export default function PersonalLab() {
   const [hydrated, setHydrated] = useState(false);
   const [documentScope, setDocumentScope] = useState<DocumentScope>("all");
   const [sortDirection, setSortDirection] = useState<DocumentSortDirection>("desc");
-  const [config, setConfig] = useState<AppConfig>({ paperless: false, paperlessUrl: "", analyzer: false, analyzerUrl: "", homeAssistant: false, homeAssistantUrl: "", energyLab: false, financeLab: false, autoSync: false, syncMinutes: 15 });
+  const [config, setConfig] = useState<AppConfig>({ paperless: false, paperlessUrl: "", analyzer: false, analyzerUrl: "", rag: false, ragUrl: "", homeAssistant: false, homeAssistantUrl: "", energyLab: false, financeLab: false, autoSync: false, syncMinutes: 15 });
   const [pageLayouts, setPageLayouts] = useState<PageLayouts>(() => normalizePageLayouts(DEFAULT_PAGE_LAYOUTS));
   const [financeAccountAssignments, setFinanceAccountAssignments] = useState<FinanceAccountAssignments>({});
   const [financeDataSelections, setFinanceDataSelections] = useState<FinanceDataSelections>({});
@@ -1142,14 +1204,18 @@ export default function PersonalLab() {
     }
     return { ...current, [key]: [...new Set(ids.map(String))] };
   });
+  const submitSearch = (value: string) => {
+    setQuery(value.trim());
+    setSearchRevision(current => current + 1);
+  };
   const commonList = { editMode, selected, setSelected, assign: () => { if (selected.length) setAssigning(true); }, dragDocument, sortDirection, setSortDirection };
   return <div className={`app ${editMode ? "editing" : ""}`}>
     <Header screen={screen} navigate={navigate} editMode={editMode} toggleEdit={toggleEdit}/>
     <div className="workspaceShell">
       <NavigationSidebar areas={countedAreas} documents={documents} editMode={editMode} activeAreaId={screen === "area" ? areaId : null} activeNodeKey={screen === "area" ? subarea : null} toggleEdit={toggleEdit} openArea={openArea} editArea={item => setEditor({ kind: "area", areaId: item.id })} addArea={() => setEditor({ kind: "area" })} drop={assignDocuments} renameNode={renameNode} addChild={addChildNode} removeNode={removeNode}/>
-      <main className="page">{document && <DocumentWorkspace document={document} paperlessUrl={config.paperlessUrl} editMode={editMode} back={() => setDocument(null)} edit={() => setDocumentEditor(document)} deactivate={() => deactivateDocument(document)}/>}<div className="screenContent" hidden={Boolean(document)}>{query.trim() ? <SearchResults documents={documents} query={query} setQuery={setQuery} analyzer={config.analyzer} openDocument={setDocument} {...commonList}/> : <>{screen === "overview" && <Overview documents={documents} openDocuments={openDocuments} paperlessUrl={config.paperlessUrl} query={query} setQuery={setQuery} openDocument={setDocument} {...commonList}/>} {screen === "area" && area && <AreaView area={area} documents={documents} config={config} pageLayouts={pageLayouts} setPageLayouts={setPageLayouts} financeAccountAssignments={financeAccountAssignments} updateFinanceAccountAssignment={updateFinanceAccountAssignment} financeDataSelections={financeDataSelections} updateFinanceDataSelection={updateFinanceDataSelection} energyProviderAssignments={energyProviderAssignments} updateEnergyProviderAssignment={updateEnergyProviderAssignment} energyMetricSelections={energyMetricSelections} updateEnergyMetricSelection={updateEnergyMetricSelection} selectedSubarea={subarea} chooseSubarea={setSubarea} goBack={() => navigate("overview")} query={query} setQuery={setQuery} openDocument={setDocument} editSubarea={id => setEditor({ kind: "subarea", areaId: area.id, subareaId: id })} addSubarea={() => setEditor({ kind: "subarea", areaId: area.id })} addGroup={(subareaId, name) => addGroup(area.id, subareaId, name)} renameParty={renameParty} {...commonList}/>} {screen === "documents" && <DocumentsView documents={documents} scope={documentScope} query={query} setQuery={setQuery} openDocument={setDocument} {...commonList}/>} {screen === "home-assistant" && <HomeAssistant configured={config.homeAssistant} onCountChange={setSelectedSensorCount}/>} {screen === "settings" && <Settings config={config} documentCount={documents.length} disabledDocuments={disabledDocuments} sensorCount={selectedSensorCount} lastSync={lastSync} goSensors={() => navigate("home-assistant")} restoreDocument={restoreDocument}/>}</>}</div></main>
+      <main className="page">{document && <DocumentWorkspace document={document} paperlessUrl={config.paperlessUrl} editMode={editMode} back={() => setDocument(null)} edit={() => setDocumentEditor(document)} deactivate={() => deactivateDocument(document)}/>}<div className="screenContent" hidden={Boolean(document)}>{query.trim() ? <SearchResults documents={documents} query={query} searchRevision={searchRevision} setQuery={submitSearch} analyzer={config.analyzer} rag={config.rag} openDocument={setDocument} {...commonList}/> : <>{screen === "overview" && <Overview documents={documents} openDocuments={openDocuments} paperlessUrl={config.paperlessUrl} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "area" && area && <AreaView area={area} documents={documents} config={config} pageLayouts={pageLayouts} setPageLayouts={setPageLayouts} financeAccountAssignments={financeAccountAssignments} updateFinanceAccountAssignment={updateFinanceAccountAssignment} financeDataSelections={financeDataSelections} updateFinanceDataSelection={updateFinanceDataSelection} energyProviderAssignments={energyProviderAssignments} updateEnergyProviderAssignment={updateEnergyProviderAssignment} energyMetricSelections={energyMetricSelections} updateEnergyMetricSelection={updateEnergyMetricSelection} selectedSubarea={subarea} chooseSubarea={setSubarea} goBack={() => navigate("overview")} query={query} setQuery={submitSearch} openDocument={setDocument} editSubarea={id => setEditor({ kind: "subarea", areaId: area.id, subareaId: id })} addSubarea={() => setEditor({ kind: "subarea", areaId: area.id })} addGroup={(subareaId, name) => addGroup(area.id, subareaId, name)} renameParty={renameParty} {...commonList}/>} {screen === "documents" && <DocumentsView documents={documents} scope={documentScope} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "home-assistant" && <HomeAssistant configured={config.homeAssistant} onCountChange={setSelectedSensorCount}/>} {screen === "settings" && <Settings config={config} documentCount={documents.length} disabledDocuments={disabledDocuments} sensorCount={selectedSensorCount} lastSync={lastSync} goSensors={() => navigate("home-assistant")} restoreDocument={restoreDocument}/>}</>}</div></main>
     </div>
-    <footer><span>PersonalLab 2.5.7</span><span>lokal auf deinem ZimaOS</span><span>by Lrd.Tiberius</span></footer>
+    <footer><span>PersonalLab 2.5.11</span><span>lokal auf deinem ZimaOS</span><span>by Lrd.Tiberius</span></footer>
     {undoMove && <div className="undoToast" role="status"><span><Icon name="check" size={17}/>{undoMove.message}</span><button onClick={undoLastMove}>Rückgängig</button><button className="toastClose" onClick={() => setUndoMove(null)} aria-label="Hinweis schließen"><Icon name="close" size={14}/></button></div>}
     {documentEditor && <Drawer document={documentEditor} areas={countedAreas} correspondents={correspondents} paperlessUrl={config.paperlessUrl} editMode={editMode} close={() => setDocumentEditor(null)} update={updateDocument} addCorrespondent={addCorrespondent} addGroup={addGroup}/>} {editor && <TileEditor key={`${editor.kind}-${editor.areaId ?? "new"}-${editor.kind === "subarea" ? editor.subareaId ?? "new" : ""}`} editor={editor} areas={areas} close={() => setEditor(null)} save={saveTile} remove={removeTile} move={moveTile}/>} {treeNodeEditor && <TreeNodeEditor key={`${treeNodeEditor.areaId}-${treeNodeEditor.uid ?? `new-${treeNodeEditor.parentUid}`}`} editor={treeNodeEditor} areas={areas} close={() => setTreeNodeEditor(null)} save={saveTreeNode} move={moveTreeNode}/>} {assigning && <DeepAssignmentDialog count={selected.length} areas={countedAreas} correspondents={correspondents} close={() => setAssigning(false)} apply={applyAssignment}/>}
   </div>;

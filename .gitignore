@@ -9,6 +9,12 @@ coverage/
 *.tar
 *.zip
 *.log
+*.pyc
+*.tsbuildinfo
+__MACOSX/
+__pycache__/
+pnpm-lock.yaml
+pnpm-workspace.yaml
 personallab.json
 personallab-*.json
 companions/energylab-0.3.2/

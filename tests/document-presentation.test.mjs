@@ -56,6 +56,18 @@ test("provides a concise summary and fallback", () => {
   assert.match(documentSummary({ type: "Rechnung", correspondent: "Stadtwerke", date: "01.08.2026" }), /^Rechnung von Stadtwerke vom 1\. August 2026\.$/);
 });
 
+test("prefers OCR-generated presentation data but respects a manual title", () => {
+  const document = {
+    title: "Roborock Qrevo Curv2 ProX",
+    type: "Rechnung",
+    presentationTitle: "Rechnung · Janado · Roborock Qrevo Curv2 ProX",
+    presentationSummary: "Rechnung RE923362 von Janado über 669,90 € für Roborock Qrevo Curv2 ProX.",
+  };
+  assert.equal(friendlyDocumentTitle(document), "Rechnung · Janado · Roborock Qrevo Curv2 ProX");
+  assert.equal(documentSummary(document), document.presentationSummary);
+  assert.equal(friendlyDocumentTitle({ ...document, metadataSource: "manual", title: "Saugroboter Arbeitszimmer" }), "Saugroboter Arbeitszimmer");
+});
+
 test("sorts German document dates in both directions", () => {
   const documents = [
     { id: 1, date: "18.12.2018" },

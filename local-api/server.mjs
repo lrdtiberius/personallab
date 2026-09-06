@@ -3,6 +3,7 @@ import { readFile, mkdir, rename, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { refreshContractStatuses } from "./contracts.mjs";
+import { enrichPaperlessDocument } from "./document-enrichment.mjs";
 import { readableGroup, sanitizeDocumentGroups } from "./groups.mjs";
 import { normalizePageLayouts } from "./layouts.mjs";
 
@@ -13,6 +14,7 @@ const dataFile = resolve(process.env.DATA_FILE ?? "/data/personallab.json");
 const paperlessUrl = (process.env.PAPERLESS_URL ?? "").replace(/\/$/, "");
 const paperlessToken = process.env.PAPERLESS_TOKEN ?? "";
 const analyzerUrl = (process.env.ANALYZER_URL ?? "").replace(/\/$/, "");
+const paperlessRagUrl = (process.env.PAPERLESS_RAG_URL ?? "").replace(/\/$/, "");
 const haUrl = (process.env.HOME_ASSISTANT_URL ?? "").replace(/\/$/, "");
 const haToken = process.env.HOME_ASSISTANT_TOKEN ?? "";
 const energyLabUrl = (process.env.ENERGYLAB_URL ?? "").replace(/\/$/, "");
@@ -72,8 +74,23 @@ function normalizeEnergyMetricSelections(value) {
     .map(([key, ids]) => [key, [...new Set(ids.map(String))]]));
 }
 
+function ensureWastewaterArea(areas, defaults) {
+  const wastewater = defaults.areas
+    ?.find(area => area.id === "energy")
+    ?.subareas?.find(subarea => subarea.id === "wastewater");
+  if (!wastewater) return areas;
+  return areas.map(area => {
+    if (area.id !== "energy" || area.subareas?.some(subarea => subarea.id === "wastewater")) return area;
+    const subareas = [...(area.subareas ?? [])];
+    const waterIndex = subareas.findIndex(subarea => subarea.id === "water");
+    subareas.splice(waterIndex >= 0 ? waterIndex + 1 : subareas.length, 0, { ...wastewater });
+    return { ...area, subareas };
+  });
+}
+
 function migrateV2(snapshot, defaults) {
-  const areas = Array.isArray(snapshot.areas) && snapshot.areas.length ? snapshot.areas : defaults.areas;
+  const existingAreas = Array.isArray(snapshot.areas) && snapshot.areas.length ? snapshot.areas : defaults.areas;
+  const areas = ensureWastewaterArea(existingAreas, defaults);
   const roots = new Map();
   for (const area of areas) for (const root of area.subareas ?? []) roots.set(`${area.id}:${root.id}`, tileUid(area.id, root));
   const documents = refreshContractStatuses(sanitizeDocumentGroups((Array.isArray(snapshot.documents) ? snapshot.documents : []).map(document => ({
@@ -83,7 +100,7 @@ function migrateV2(snapshot, defaults) {
   const migrated = {
     ...defaults,
     ...snapshot,
-    version: "2.5.7",
+    version: "2.5.11",
     areas,
     documents,
     correspondents: Array.isArray(snapshot.correspondents) ? snapshot.correspondents : [],
@@ -94,7 +111,7 @@ function migrateV2(snapshot, defaults) {
     energyProviderAssignments: normalizeEnergyProviderAssignments(snapshot.energyProviderAssignments),
     energyMetricSelections: normalizeEnergyMetricSelections(snapshot.energyMetricSelections),
     haSensors: Array.isArray(snapshot.haSensors) ? snapshot.haSensors : [],
-    migration: { ...(snapshot.migration ?? {}), personalLab2: true, personalLab22: true, personalLab23: true, personalLab24: true, personalLab25: true, personalLab253: true, personalLab254: true, personalLab255: true, personalLab256: true, personalLab257: true },
+    migration: { ...(snapshot.migration ?? {}), personalLab2: true, personalLab22: true, personalLab23: true, personalLab24: true, personalLab25: true, personalLab253: true, personalLab254: true, personalLab255: true, personalLab256: true, personalLab257: true, personalLab258: true, personalLab259: true, personalLab2510: true, personalLab2511: true },
   };
   delete migrated.financeLayout;
   delete migrated.deletedPaperlessDocumentIds;
@@ -145,6 +162,34 @@ async function fetchJson(url, headers) {
   const response = await fetch(url, { headers, signal: AbortSignal.timeout(30000) });
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}: ${url}`);
   return response.json();
+}
+
+async function searchPaperlessRag(query) {
+  if (!paperlessRagUrl) throw new Error("Paperless RAG ist nicht konfiguriert");
+  const upstream = await fetch(`${paperlessRagUrl}/api/ask`, {
+    method: "POST",
+    headers: { "content-type": "application/json", accept: "application/json" },
+    body: JSON.stringify({ question: query }),
+    signal: AbortSignal.timeout(310000),
+  });
+  if (!upstream.ok) throw new Error(`${upstream.status} ${upstream.statusText}: ${paperlessRagUrl}/api/ask`);
+  const payload = await upstream.json();
+  const activeDocumentIds = new Set(state.documents.map(document => Number(document.id)));
+  const sources = (Array.isArray(payload.sources) ? payload.sources : []).map(source => ({
+    documentId: Number(source.document_id ?? source.documentId),
+    title: String(source.title ?? ""),
+    correspondent: String(source.correspondent ?? ""),
+    documentType: String(source.document_type ?? source.documentType ?? ""),
+    documentDate: String(source.document_date ?? source.documentDate ?? ""),
+    excerpt: String(source.excerpt ?? ""),
+    score: Number(source.score ?? 0),
+  })).filter(source => Number.isInteger(source.documentId) && activeDocumentIds.has(source.documentId));
+  return {
+    answer: String(payload.answer ?? ""),
+    sources,
+    durationMs: Number(payload.duration_ms ?? 0),
+    mode: String(payload.search?.answer_mode ?? "retrieval"),
+  };
 }
 
 async function proxyPaperlessDocument(response, documentId, kind) {
@@ -301,9 +346,23 @@ async function syncPaperless() {
     const documentType = referenceName(item.document_type, typeNames);
     const documentTags = (item.tags ?? []).map(tag => referenceName(tag, tagNames)).filter(Boolean);
     const analysis = analyzerByPaperlessId.get(Number(item.id));
-    const effectiveCorrespondent = analysis?.correspondent || correspondent;
+    const analysisTitle = String(analysis?.short_title ?? "").trim();
+    const analysisSummary = String(analysis?.summary ?? "").trim();
+    const paperlessDate = String(item.created ?? item.document_date ?? item.added ?? "").slice(0, 10);
+    const enrichment = enrichPaperlessDocument({
+      title: item.title ?? "",
+      content: item.content ?? "",
+      correspondent: analysis?.correspondent || correspondent,
+      documentType: analysis?.document_type || documentType,
+      analysisSummary: analysis?.summary ?? "",
+      date: paperlessDate,
+    });
+    const effectiveCorrespondent = enrichment.correspondent || analysis?.correspondent || correspondent;
     const effectiveDocumentType = analysis?.document_type || documentType;
-    const suggested = classifyDocument(item, effectiveCorrespondent, effectiveDocumentType, documentTags, analysis);
+    const suggested = classifyDocument(item, effectiveCorrespondent, effectiveDocumentType, documentTags, {
+      document_type: analysis?.document_type,
+      summary: [analysis?.summary, enrichment.summary].filter(Boolean).join(" "),
+    });
     return {
       id: Number(item.id),
       title: prior?.title ?? item.title ?? `Dokument ${item.id}`,
@@ -312,10 +371,15 @@ async function syncPaperless() {
       type: prior?.metadataSource === "manual" ? prior.type : effectiveDocumentType || prior?.type || "",
       metadataSource: prior?.metadataSource ?? "paperless",
       tags: documentTags,
-      analysisSummary: analysis?.summary ?? prior?.analysisSummary ?? "",
+      analysisSummary: analysisSummary || prior?.analysisSummary || "",
       analysisConfidence: analysis?.confidence ?? prior?.analysisConfidence ?? null,
+      analysisKeywords: Array.isArray(analysis?.keywords) ? analysis.keywords.map(String).filter(Boolean) : (prior?.analysisKeywords ?? []),
+      analysisCategory: String(analysis?.category ?? prior?.analysisCategory ?? ""),
+      analysisSearchText: String(analysis?.search_text ?? prior?.analysisSearchText ?? "").slice(0, 8000),
       analyzedAt: analysis?.analyzed_at ?? prior?.analyzedAt ?? null,
-      date: String(item.created ?? item.document_date ?? item.added ?? "").slice(0, 10),
+      presentationTitle: analysisTitle || enrichment.title || prior?.presentationTitle || "",
+      presentationSummary: analysisSummary || enrichment.summary || prior?.presentationSummary || "",
+      date: enrichment.date || paperlessDate,
       added: String(item.added ?? "").slice(0, 19),
       modified: String(item.modified ?? "").slice(0, 19),
       area: protectedAssignment ? prior.area : suggested.area,
@@ -399,10 +463,11 @@ async function legacyEnergyLabOverview() {
   const monthStart = `${today.slice(0, 7)}-01`;
   const yearStart = `${today.slice(0, 4)}-01-01`;
   const definitions = [
-    ["electricity", "Strom", "grid_import", "kWh"],
-    ["water", "Wasser", "water", "m³"],
-    ["gas", "Gas", "gas", "m³"],
-    ["pv", "Photovoltaik", "pv_self", "kWh"],
+    ["electricity", "Strom", "grid_import", "grid_import", "kWh"],
+    ["water", "Wasser", "water", "water", "m³"],
+    ["wastewater", "Abwasser", "water", "wastewater", "m³"],
+    ["gas", "Gas", "gas", "gas", "m³"],
+    ["pv", "Photovoltaik", "pv_self", "grid_import", "kWh"],
   ];
   const sumDelta = (items, start) => items.filter(item => item.read_on >= start && Number(item.is_valid ?? 1) !== 0).reduce((sum, item) => sum + Number(item.delta_value ?? 0), 0);
   const dateValue = value => new Date(`${value}T12:00:00Z`);
@@ -452,8 +517,8 @@ async function legacyEnergyLabOverview() {
     }
     return { consumption, variable };
   };
-  const financesFor = (metric, start = null, end = null) => {
-    const usage = allocatedUsage(metric, start, end);
+  const financesFor = (metric, start = null, end = null, readingMetric = metric) => {
+    const usage = allocatedUsage(readingMetric, start, end, metric);
     let baseFee = 0;
     let advance = 0;
     for (const tariff of tariffs.filter(item => item.metric === metric).sort((a, b) => String(a.valid_from).localeCompare(String(b.valid_from)) || Number(a.id) - Number(b.id))) {
@@ -467,13 +532,13 @@ async function legacyEnergyLabOverview() {
     const cost = usage.variable + baseFee;
     return { variable: usage.variable, baseFee, cost, advance, balance: advance - cost, consumption: usage.consumption };
   };
-  const forecastFor = metric => {
-    const valid = readings.filter(item => item.metric === metric && Number(item.is_valid ?? 1) !== 0).sort((a, b) => String(a.read_on).localeCompare(String(b.read_on)) || Number(a.id) - Number(b.id));
+  const forecastFor = (metric, readingMetric = metric) => {
+    const valid = readings.filter(item => item.metric === readingMetric && Number(item.is_valid ?? 1) !== 0).sort((a, b) => String(a.read_on).localeCompare(String(b.read_on)) || Number(a.id) - Number(b.id));
     const latest = valid.at(-1);
     if (!latest) return null;
     const tariff = activeTariff(metric, latest.read_on);
     if (!tariff?.valid_to) return null;
-    const currentUsage = allocatedUsage(metric, tariff.valid_from, latest.read_on);
+    const currentUsage = allocatedUsage(readingMetric, tariff.valid_from, latest.read_on, metric);
     if (currentUsage.consumption <= 0) return null;
     const observedStart = tariff.valid_from > valid[0].read_on ? tariff.valid_from : valid[0].read_on;
     const observedDays = Math.max(1, daysBetween(observedStart, latest.read_on));
@@ -485,15 +550,14 @@ async function legacyEnergyLabOverview() {
     const projectedCost = projectedVariable + projectedBase;
     return { through: tariff.valid_to, cost: projectedCost, advance: projectedAdvance, balance: projectedAdvance - projectedCost };
   };
-  const segments = definitions.map(([id, label, metric, fallbackUnit]) => {
-    const history = readings.filter(item => item.metric === metric).sort((a, b) => String(b.read_on).localeCompare(String(a.read_on))).map(item => ({ id: item.id, date: item.read_on, total: Number(item.total_value), delta: item.delta_value == null ? null : Number(item.delta_value), unit: item.unit || fallbackUnit, source: item.source }));
-    const contracts = tariffs.filter(item => item.metric === (metric === "pv_self" ? "grid_import" : metric)).sort((a, b) => String(b.valid_from).localeCompare(String(a.valid_from))).map(item => ({ id: Number(item.id), provider: item.provider || "Ohne Anbieter", validFrom: item.valid_from, validTo: item.valid_to || null, unitPrice: Number(item.price_per_kwh), unitPriceLabel: metric === "water" ? `${Number(item.price_per_kwh).toFixed(4)} €/m³` : `${(Number(item.price_per_kwh) * 100).toFixed(2)} Cent/kWh`, baseFeeMonthly: Number(item.base_fee_monthly || 0), advanceMonthly: Number(item.advance_monthly || 0), active: item.valid_from <= today && (!item.valid_to || item.valid_to >= today) }));
-    const tariffMetric = metric === "pv_self" ? "grid_import" : metric;
-    const monthFinance = id === "pv" ? null : financesFor(tariffMetric, monthStart, today);
-    const yearFinance = id === "pv" ? null : financesFor(tariffMetric, yearStart, today);
+  const segments = definitions.map(([id, label, readingMetric, tariffMetric, fallbackUnit]) => {
+    const history = readings.filter(item => item.metric === readingMetric).sort((a, b) => String(b.read_on).localeCompare(String(a.read_on))).map(item => ({ id: item.id, date: item.read_on, total: Number(item.total_value), delta: item.delta_value == null ? null : Number(item.delta_value), unit: item.unit || fallbackUnit, source: item.source }));
+    const contracts = tariffs.filter(item => item.metric === tariffMetric).sort((a, b) => String(b.valid_from).localeCompare(String(a.valid_from))).map(item => ({ id: Number(item.id), provider: item.provider || "Ohne Anbieter", validFrom: item.valid_from, validTo: item.valid_to || null, unitPrice: Number(item.price_per_kwh), unitPriceLabel: ["water", "wastewater"].includes(tariffMetric) ? `${Number(item.price_per_kwh).toFixed(4)} €/m³` : `${(Number(item.price_per_kwh) * 100).toFixed(2)} Cent/kWh`, baseFeeMonthly: Number(item.base_fee_monthly || 0), advanceMonthly: Number(item.advance_monthly || 0), active: item.valid_from <= today && (!item.valid_to || item.valid_to >= today) }));
+    const monthFinance = id === "pv" ? null : financesFor(tariffMetric, monthStart, today, readingMetric);
+    const yearFinance = id === "pv" ? null : financesFor(tariffMetric, yearStart, today, readingMetric);
     const monthSavings = id === "pv" ? allocatedUsage("pv_self", monthStart, today, "grid_import").variable : null;
     const yearSavings = id === "pv" ? allocatedUsage("pv_self", yearStart, today, "grid_import").variable : null;
-    return { id, label, unit: history[0]?.unit || fallbackUnit, latest: history[0] ?? null, consumption: { month: allocatedUsage(metric, monthStart, today, tariffMetric).consumption, year: allocatedUsage(metric, yearStart, today, tariffMetric).consumption, total: allocatedUsage(metric, null, today, tariffMetric).consumption }, finances: { month: monthFinance, year: yearFinance }, forecast: yearFinance ? forecastFor(tariffMetric) : null, savings: id === "pv" ? { month: monthSavings, year: yearSavings } : undefined, contracts, history, invalidCount: readings.filter(item => item.metric === metric && Number(item.is_valid ?? 1) === 0).length };
+    return { id, label, unit: history[0]?.unit || fallbackUnit, latest: history[0] ?? null, consumption: { month: allocatedUsage(readingMetric, monthStart, today, tariffMetric).consumption, year: allocatedUsage(readingMetric, yearStart, today, tariffMetric).consumption, total: allocatedUsage(readingMetric, null, today, tariffMetric).consumption }, finances: { month: monthFinance, year: yearFinance }, forecast: yearFinance ? forecastFor(tariffMetric, readingMetric) : null, savings: id === "pv" ? { month: monthSavings, year: yearSavings } : undefined, contracts, history, invalidCount: readings.filter(item => item.metric === readingMetric && Number(item.is_valid ?? 1) === 0).length };
   });
   return { version: backup.version ?? "0.4.4", generatedAt: backup.exported_at ?? new Date().toISOString(), period: { monthStart, yearStart }, segments, sourceUrl: energyLabUrl };
 }
@@ -506,7 +570,7 @@ async function energyLabOverview() {
     if (!Array.isArray(payload.segments)) throw new Error("EnergieLab liefert ungültige Integrationsdaten");
     return { ...payload, sourceUrl: energyLabUrl };
   } catch (error) {
-    if (String(error).includes("404")) throw new Error("EnergyLab 0.4.5 mit PersonalLab-Schnittstelle wird benötigt");
+    if (String(error).includes("404")) throw new Error("EnergyLab 0.6.6 mit PersonalLab-Schnittstelle wird benötigt");
     throw error;
   }
 }
@@ -556,7 +620,7 @@ state = await initialState();
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   try {
-    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "2.5.7", documents: state.documents.length });
+    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "2.5.11", documents: state.documents.length, rag: Boolean(paperlessRagUrl) });
     const documentAsset = url.pathname.match(/^\/api\/documents\/(\d+)\/(thumbnail|preview)$/);
     if (request.method === "GET" && documentAsset) return proxyPaperlessDocument(response, documentAsset[1], documentAsset[2]);
     const documentDisable = url.pathname.match(/^\/api\/documents\/(\d+)\/disable\/?$/);
@@ -565,7 +629,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "POST" && documentRestore) return restorePersonalLabDocument(response, documentRestore[1]);
     if (request.method === "GET" && url.pathname === "/api/state") {
       state.documents = refreshContractStatuses(state.documents);
-      return json(response, 200, { ...state, config: { paperless: Boolean(paperlessUrl && paperlessToken), paperlessUrl, analyzer: Boolean(analyzerUrl), analyzerUrl, homeAssistant: Boolean(haUrl && haToken), homeAssistantUrl: haUrl, energyLab: Boolean(energyLabUrl), financeLab: Boolean(financeLabUrl), autoSync, syncMinutes } });
+      return json(response, 200, { ...state, config: { paperless: Boolean(paperlessUrl && paperlessToken), paperlessUrl, analyzer: Boolean(analyzerUrl), analyzerUrl, rag: Boolean(paperlessRagUrl), ragUrl: paperlessRagUrl, homeAssistant: Boolean(haUrl && haToken), homeAssistantUrl: haUrl, energyLab: Boolean(energyLabUrl), financeLab: Boolean(financeLabUrl), autoSync, syncMinutes } });
     }
     if (request.method === "PUT" && url.pathname === "/api/state") {
       const incoming = await bodyJson(request);
@@ -595,6 +659,18 @@ const server = http.createServer(async (request, response) => {
       if (syncPromise) return json(response, 202, { status: "running" });
       startSync().catch(error => console.error("Paperless-Abgleich fehlgeschlagen:", error.message));
       return json(response, 202, { status: "started" });
+    }
+    if (request.method === "POST" && url.pathname === "/api/search") {
+      const incoming = await bodyJson(request);
+      const query = String(incoming.query ?? "").trim();
+      if (query.length < 2 || query.length > 2000) return json(response, 400, { error: "Die Suchanfrage muss zwischen 2 und 2000 Zeichen lang sein" });
+      if (!paperlessRagUrl) return json(response, 503, { error: "Paperless RAG ist nicht konfiguriert" });
+      try {
+        return json(response, 200, await searchPaperlessRag(query));
+      } catch (error) {
+        console.error("Paperless-RAG-Suche fehlgeschlagen:", error.message);
+        return json(response, 502, { error: "Die RAG-Suche ist momentan nicht erreichbar" });
+      }
     }
     if (request.method === "GET" && url.pathname === "/api/home-assistant/entities") return json(response, 200, { entities: await homeAssistantEntities() });
     if (request.method === "GET" && url.pathname === "/api/home-assistant/overview") return json(response, 200, { entities: await selectedHomeAssistantEntities(), selected: state.haSensors ?? [] });

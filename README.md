@@ -1,4 +1,37 @@
-# PersonalLab 2.5.7
+# PersonalLab 2.5.11
+
+## Neu in 2.5.11
+
+- eigener Energiepunkt `Abwasser` mit Übersicht, Vertrag, Zahlungen, Kosten, Historie und Zählerständen aus EnergieLab 0.6.6
+- Wasser und Abwasser zeigen denselben Wasserzähler, behalten aber getrennte Anbieter, Tarife, Grundpreise und Zahlungen
+- vorhandene `personallab.json`-Dateien werden beim Update ergänzt; eigene Ablagestruktur, Zuordnungen und Dokumente bleiben erhalten
+- das Build-Paket verändert weder EnergieLab noch den Analyzer, sondern aktualisiert ausschließlich PersonalLab
+
+## Neu in 2.5.10
+
+- die Suche beginnt erst nach Enter oder einem Klick auf `Suchen`; während der Eingabe werden weder die Dokumentliste neu berechnet noch Anfragen an Ollama gesendet
+- bei verbundener Paperless KI-Suche übernimmt PersonalLab deren Antwort, Quellenreihenfolge und Textausschnitte direkt statt sie mit schwächeren lokalen Treffern zu vermischen
+- die lokale Suche wird nur noch verwendet, wenn kein RAG-Container konfiguriert ist oder dieser nicht erreichbar ist
+- Digital-Akte-Analyzer 1.2.4 erzeugt mit `qwen3:4b` konkretere, natürlich formulierte Titel und Inhaltsangaben ohne Seitennummern, OCR-Fragmente oder bloße Standardfloskeln
+- vorhandene Analyzer-Ergebnisse bleiben erhalten und können kontrolliert in Paketen zu je 25 Dokumenten mit dem verbesserten Prompt erneuert werden
+- ein bereits vorhandenes EnergieLab 0.5.0 wird vom Build-Skript erkannt und nicht auf die enthaltene Rückfallversion 0.4.5 zurückgestuft
+
+## Neu in 2.5.9
+
+- der bereits lokal von Ollama erzeugte `short_title` wird jetzt aus dem Digital-Akte-Analyzer übernommen und vor regelbasierten Ersatznamen angezeigt
+- die KI-Zusammenfassung des Analyzers hat Vorrang; die OCR-Rechnungslogik aus 2.5.8 bleibt als zuverlässige Rückfallebene erhalten
+- Analyzer-Schlagwörter, Kategorie und strukturierte Fakten fließen zusätzlich in die schnelle lokale Suche ein
+- der vorhandene Container `paperless-rag-webui:3.0.4` kann über `PAPERLESS_RAG_URL` für semantische Qdrant-/Ollama-Suche angebunden werden
+- Treffer aus dem vollständigen Dokumentinhalt werden mit lokalen Titel- und Metadatentreffern zusammengeführt; bei Ausfall des RAG-Dienstes funktioniert die lokale Suche weiter
+- die enthaltene Analyzer-Erweiterung 1.2.3 legt keine neue Datenbank an und startet keine Neuanalyse, sondern macht die bereits gespeicherten Ollama-Ergebnisse für PersonalLab lesbar
+
+## Neu in 2.5.8
+
+- neue Rechnungen erhalten automatisch einen PersonalLab-Titel aus Dokumenttyp, Händler und Gegenstand statt nur den Paperless-Titel anzuzeigen
+- der nur lesend abgerufene Paperless-OCR-Text liefert dafür Rechnungssteller, Rechnungsnummer, Gesamtbetrag und echtes Rechnungsdatum
+- die Kurzbeschreibung fasst diese Angaben verständlich zusammen, zum Beispiel `Rechnung RE923362 von Janado über 669,90 € für Roborock Qrevo Curv2 ProX`
+- der vollständige OCR-Text wird nicht in der PersonalLab-Datendatei gespeichert
+- manuell in PersonalLab vergebene Titel und Metadaten behalten weiterhin Vorrang
 
 ## Neu in 2.5.7
 
@@ -21,7 +54,7 @@
 
 ## Neu in 2.5.4
 
-- direkt bei `Strom`, `Wasser`, `Gas` oder `Photovoltaik` lassen sich die von EnergieLab gelieferten Kennzahlen auswählen
+- direkt bei `Strom`, `Wasser`, `Abwasser`, `Gas` oder `Photovoltaik` lassen sich die von EnergieLab gelieferten Kennzahlen auswählen
 - der `Aktuelle Zählerstand` aus EnergieLab steht mit Wert, Einheit und Datum als eigene auswählbare Kachel bereit
 - zusätzlich können Verbrauch, Kosten, Abschläge, Hochrechnung und Datenqualität an- oder abgewählt werden, sofern EnergieLab diese Werte liefert
 - die Reihenfolge der Energiekacheln lässt sich im selben Dialog festlegen
@@ -120,7 +153,7 @@ PersonalLab ist eine lokale, bearbeitbare Dokumentenzentrale für Paperless-NGX,
 - interaktive Bereichs- und Unterbereichskacheln
 - eigener Bereich `Arbeit` mit Verträgen, Gehaltsabrechnungen, Steuerbescheinigungen, Arbeitsunfähigkeit, Zeugnissen und Arbeitgeber-Schriftverkehr
 - Gesundheitsakte mit Befunden, Arztbriefen, Diagnosen, Therapie, Hilfsmitteln und Schwerbehinderung
-- eigener Hauptbereich `Energie` mit Strom, Wasser, Gas und Photovoltaik
+- eigener Hauptbereich `Energie` mit Strom, Gas, Wasser, Abwasser und Photovoltaik
 - EnergieLab-Liveansichten für Übersicht, Verträge, Abschläge, Historie und Zählerstände
 - FinanzLab-Liveansichten für Kontostände, offene Kredite und kommende Raten
 - globales Suchen und Filtern
@@ -134,16 +167,19 @@ PersonalLab ist eine lokale, bearbeitbare Dokumentenzentrale für Paperless-NGX,
 - auswählbare, nur lesende Home-Assistant-Sensorkacheln
 - persistente Konfiguration in `/DATA/AppData/personal-lab/personallab.json`
 
-PersonalLab verändert weder Paperless noch EnergieLab oder FinanzLab. Eigene Dokumentnamen und Zuordnungen werden ausschließlich in der PersonalLab-Datendatei gespeichert. Die Fachanbindungen sind nur lesend. EnergieLab 0.4.5 liefert über `/api/personallab` exakt die bereits im EnergieLab berechneten Dashboardwerte; PersonalLab rechnet Kosten, Abschläge, Erstattungen und Nachzahlungen nicht selbst aus.
+PersonalLab verändert weder Paperless noch EnergieLab oder FinanzLab. Eigene Dokumentnamen und Zuordnungen werden ausschließlich in der PersonalLab-Datendatei gespeichert. Die Fachanbindungen sind nur lesend. EnergieLab 0.6.6 liefert über `/api/personallab` exakt die bereits im EnergieLab berechneten Dashboardwerte; PersonalLab rechnet Kosten, Abschläge, Erstattungen und Nachzahlungen nicht selbst aus. Für Abwasser übernimmt EnergieLab die Messreihe des Wasserzählers, berechnet Vertrag, Preis und Zahlungen jedoch getrennt.
 
-Der Digital-Akte-Analyzer 1.2.2 wird über `ANALYZER_URL` nur lesend angebunden. PersonalLab verbindet dessen Ergebnisse anhand der Paperless-ID mit dem Originaldokument. Analyzer-Dokumentart, Zusammenfassung und Konfidenz ergänzen dabei Paperless-Tags, Dokumentart und Korrespondent. Manuelle PersonalLab-Zuordnungen werden nie automatisch überschrieben.
+Der Digital-Akte-Analyzer 1.2.4 wird über `ANALYZER_URL` nur lesend angebunden. PersonalLab verbindet dessen Ergebnisse anhand der Paperless-ID mit dem Originaldokument. KI-Titel, Zusammenfassung, Dokumentart, Schlagwörter, Kategorie und strukturierte Suchdaten ergänzen dabei Paperless-Tags, Dokumentart und Korrespondent. Manuelle PersonalLab-Metadaten und Zuordnungen werden nie automatisch überschrieben.
+
+Für die Suche kann zusätzlich der bereits vorhandene Container `paperless-rag-webui:3.0.4` über `PAPERLESS_RAG_URL` angebunden werden. Erst nach der ausdrücklichen Bestätigung mit Enter oder `Suchen` sendet PersonalLab die fertige Frage an dessen `/api/ask`-Schnittstelle. Antwort, Reihenfolge, Textausschnitte und Paperless-IDs der Quellen werden direkt übernommen. Qdrant, Ollama und Paperless bleiben unverändert.
 
 ## Voraussetzungen
 
 - ZimaOS oder ein anderer Docker-Host
 - Paperless-NGX mit API-Token
-- EnergieLab 0.4.5 (im Paket enthalten)
-- Digital-Akte-Analyzer 1.2.2 (Vorgabe in `.env.example`: Port 8093)
+- EnergieLab 0.6.6
+- Digital-Akte-Analyzer 1.2.2 als vorhandenes Basisimage; die enthaltene Erweiterung baut daraus 1.2.4
+- optional `paperless-rag-webui:3.0.4` aus `images.tar` für semantische Inhaltssuche
 - FinanzLab 0.13.4
 - optional Home Assistant mit langlebigem Zugriffstoken
 - Portainer oder Docker Compose
@@ -163,10 +199,21 @@ nano .env
 In `.env` mindestens eintragen:
 
 ```dotenv
-PERSONALLAB_BIND_ADDRESS=192.168.1.100
-PAPERLESS_URL=http://192.168.1.100:8001
+PERSONALLAB_BIND_ADDRESS=0.0.0.0
+PAPERLESS_URL=http://DEIN-SERVER:8001
 PAPERLESS_TOKEN=DEIN_PAPERLESS_API_TOKEN
 ```
+
+Für KI-Titel und semantische Suche zusätzlich die bereits laufenden lokalen Dienste eintragen:
+
+```dotenv
+ANALYZER_URL=http://DEIN-SERVER:8093
+PAPERLESS_RAG_URL=http://ADRESSE-DES-RAG-CONTAINERS
+```
+
+`PAPERLESS_RAG_URL` ist die Adresse, unter der die Oberfläche des Containers
+`paperless-rag-webui:3.0.4` erreichbar ist. Bleibt sie leer, arbeitet die lokale
+PersonalLab-Suche weiterhin mit Titel, Metadaten und Analyzer-Inhalten.
 
 Für Home Assistant zusätzlich:
 
@@ -180,8 +227,8 @@ Wenn Home Assistant zunächst nicht genutzt werden soll, bleiben URL und Token l
 Die beiden Fachanwendungen werden über ihre lokalen Adressen angebunden:
 
 ```dotenv
-ENERGYLAB_URL=http://192.168.1.100:8090
-FINANZLAB_URL=http://192.168.1.100:8798
+ENERGYLAB_URL=http://DEIN-SERVER:8090
+FINANZLAB_URL=http://DEIN-SERVER:8798
 FINANZLAB_HOUSEHOLD_ID=
 ```
 
@@ -194,28 +241,37 @@ cd /DATA/AppData/personal-lab-stack
 bash ./build-images.sh
 ```
 
+Bei einer bestehenden, per Docker Compose angelegten Installation genügt nach
+dem Ersetzen der Projektdateien:
+
+```bash
+cd /DATA/AppData/personal-lab-stack
+chmod +x update.sh build-images.sh build-and-export.sh
+./update.sh
+```
+
+`update.sh` sichert zuerst `/DATA/AppData/personal-lab/personallab.json`, baut
+beide PersonalLab-Images und erstellt die Container anhand der vorhandenen
+`.env` und `compose.yaml` neu. Deshalb muss der in Portainer als `Limited`
+angezeigte Stack nicht dort bearbeitet oder entsperrt werden.
+
 Erwartete Images:
 
 ```text
-energylab:0.4.5
-personal-lab-api:2.5.7
-personal-lab-web:2.5.7
+personal-lab-api:2.5.11
+personal-lab-web:2.5.11
 ```
 
-## 3. EnergieLab aktualisieren
+## 3. EnergieLab-Verbindung prüfen
 
-Im bestehenden EnergieLab-Stack nur das Image ändern:
-
-```yaml
-image: energylab:0.4.5
-```
-
-Anschließend den bestehenden EnergieLab-Stack ohne **Re-pull image** aktualisieren. Alle Volumes und sonstigen Einstellungen bleiben unverändert. Version 0.4.5 ergänzt lediglich die nur lesende PersonalLab-Schnittstelle. Die gelieferten Kostenwerte stammen direkt aus denselben EnergieLab-Funktionen wie das EnergieLab-Dashboard.
+Für den getrennten Abwasserbereich wird EnergieLab 0.6.6 benötigt. Das
+PersonalLab-Build-Skript verändert EnergieLab nicht. Die gelieferten Verbrauchs-,
+Kosten- und Zahlungswerte stammen direkt aus der nur lesenden EnergieLab-Schnittstelle.
 
 Die Schnittstelle lässt sich danach prüfen mit:
 
 ```bash
-curl -fsS http://192.168.1.100:8090/api/personallab
+curl -fsS http://DEIN-SERVER:8090/api/personallab
 ```
 
 ## 4. PersonalLab starten
@@ -227,7 +283,7 @@ docker compose --env-file .env -f compose.yaml up -d
 Danach ist PersonalLab standardmäßig erreichbar unter:
 
 ```text
-http://192.168.1.100:8094
+http://DEIN-SERVER:8094
 ```
 
 ## Portainer
@@ -251,9 +307,9 @@ Vertragsdaten werden im Dokumentdetail bearbeitet. Ist ein Vertragsende hinterle
 
 ## Update von 1.x
 
-Der bestehende Datenordner `/DATA/AppData/personal-lab` bleibt unverändert eingebunden. PersonalLab 2.5.7 übernimmt die vorhandene `personallab.json`, ergänzt fehlende interne Zielverweise, die Seiteneinstellungen sowie die Konten-, FinanzLab-, Energieanbieter- und EnergieLab-Auswahlen und bewahrt die vorhandene Hierarchie. Lokal deaktivierte Dokumente werden in derselben Datei gespeichert und bei weiteren Paperless-Abgleichen ausgeblendet. Jahre, verständliche Anzeigenamen, Inhaltsangaben und Suchwerte werden nur in der Oberfläche abgeleitet; vorhandene Dokumenttitel werden nicht überschrieben. Vor dem Update wird dennoch eine Sicherung der Datei empfohlen.
+Der bestehende Datenordner `/DATA/AppData/personal-lab` bleibt unverändert eingebunden. PersonalLab 2.5.11 übernimmt die vorhandene `personallab.json`, ergänzt den fehlenden Energiepunkt `Abwasser` direkt hinter `Wasser` sowie fehlende interne Zielverweise, Seiteneinstellungen und Auswahlen. Die vorhandene Hierarchie, Dokumente und eigenen Zuordnungen bleiben erhalten. Lokal deaktivierte Dokumente werden in derselben Datei gespeichert und bei weiteren Paperless-Abgleichen ausgeblendet. Vor dem Update wird dennoch eine Sicherung der Datei empfohlen.
 
-Im Bereich **Energie** führt die Auswahl **Strom**, **Wasser**, **Gas** oder **Photovoltaik** zu den eingebetteten Ansichten **Übersicht**, **Verträge**, **Abschläge**, **Historie** und **Zählerstände**. Unter **Kredite & Finanzen → Konten** stehen die FinanzLab-Ansichten **Kontostände**, **Offene Kredite** und **Raten** bereit.
+Im Bereich **Energie** führt die Auswahl **Strom**, **Wasser**, **Abwasser**, **Gas** oder **Photovoltaik** zu den eingebetteten Ansichten **Übersicht**, **Verträge**, **Abschläge**, **Historie** und **Zählerstände**. Wasser und Abwasser greifen auf denselben Zählerstand zu; die finanziellen Angaben stammen jeweils aus dem eigenen EnergieLab-Vertrag. Unter **Kredite & Finanzen → Konten** stehen die FinanzLab-Ansichten **Kontostände**, **Offene Kredite** und **Raten** bereit.
 
 Neue Paperless-Dokumente werden beim Start und danach standardmäßig alle 15 Minuten eingelesen. Der Knopf **Jetzt abgleichen** startet den Vorgang sofort. Regelbasierte Erstzuordnungen können jederzeit manuell überschrieben werden.
 
@@ -267,7 +323,7 @@ Unter **Home Assistant** auf **Sensor auswählen** klicken. PersonalLab zeigt nu
 docker compose --env-file .env -f compose.yaml ps
 docker logs -f personal-lab-api
 docker logs -f personal-lab-web
-curl -fsS http://192.168.1.100:8094/api/health
+curl -fsS http://DEIN-SERVER:8094/api/health
 ```
 
 ## Sicherung

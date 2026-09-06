@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "PersonalLab 2.5.7",
+  title: "PersonalLab 2.5.11",
   description:
     "Lokale Dokument- und Datenzentrale für Paperless-NGX, EnergieLab, FinanzLab und Home Assistant.",
   icons: {

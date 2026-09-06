@@ -1,6 +1,6 @@
 services:
   personal-lab-api:
-    image: personal-lab-api:2.5.7
+    image: personal-lab-api:2.5.11
     container_name: personal-lab-api
     restart: unless-stopped
     environment:
@@ -10,6 +10,7 @@ services:
       PAPERLESS_URL: ${PAPERLESS_URL}
       PAPERLESS_TOKEN: ${PAPERLESS_TOKEN}
       ANALYZER_URL: ${ANALYZER_URL:-}
+      PAPERLESS_RAG_URL: ${PAPERLESS_RAG_URL:-}
       HOME_ASSISTANT_URL: ${HOME_ASSISTANT_URL}
       HOME_ASSISTANT_TOKEN: ${HOME_ASSISTANT_TOKEN}
       ENERGYLAB_URL: ${ENERGYLAB_URL}
@@ -28,7 +29,7 @@ services:
       - no-new-privileges:true
 
   personal-lab-web:
-    image: personal-lab-web:2.5.7
+    image: personal-lab-web:2.5.11
     container_name: personal-lab-web
     restart: unless-stopped
     depends_on:
@@ -40,7 +41,7 @@ services:
       HOSTNAME: 0.0.0.0
       PERSONALLAB_API_URL: http://personal-lab-api:8095
     ports:
-      - "${PERSONALLAB_BIND_ADDRESS:-192.168.1.100}:${PERSONALLAB_HOST_PORT:-8094}:3000"
+      - "${PERSONALLAB_BIND_ADDRESS:-0.0.0.0}:${PERSONALLAB_HOST_PORT:-8094}:3000"
     networks:
       - personal-lab
     security_opt:

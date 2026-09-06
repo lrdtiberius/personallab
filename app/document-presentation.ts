@@ -7,6 +7,12 @@ export type DocumentPresentationInput = {
   area?: string;
   subarea?: string;
   analysisSummary?: string;
+  presentationTitle?: string;
+  presentationSummary?: string;
+  analysisKeywords?: string[];
+  analysisCategory?: string;
+  analysisSearchText?: string;
+  metadataSource?: string;
   tags?: string[];
 };
 
@@ -137,7 +143,7 @@ function needsGeneratedTitle(title: string) {
 }
 
 export function documentSummary(document: DocumentPresentationInput, maxLength = 180) {
-  const summary = clean(String(document.analysisSummary ?? ""));
+  const summary = clean(String(document.presentationSummary || document.analysisSummary || ""));
   if (!summary) {
     const type = knownDocumentType(String(document.type ?? "")) || "Dokument";
     const correspondent = knownCorrespondent(String(document.correspondent ?? ""));
@@ -177,6 +183,8 @@ export function sortDocumentsByDate<T extends DocumentPresentationInput>(documen
 
 export function friendlyDocumentTitle(document: DocumentPresentationInput) {
   const title = clean(String(document.title ?? ""));
+  const presentationTitle = clean(String(document.presentationTitle ?? ""));
+  if (presentationTitle && document.metadataSource !== "manual") return presentationTitle;
   const type = clean(String(document.type ?? "")) || "Dokument";
   const correspondent = knownCorrespondent(String(document.correspondent ?? ""));
   const period = documentPeriod(document);

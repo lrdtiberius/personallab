@@ -1,22 +1,29 @@
-PERSONALLAB 2.5.7 + ENERGIELAB 0.4.5 AUF ZIMAOS
+PERSONALLAB 2.5.11 AUF ZIMAOS
 
-EnergieLab 0.4.5 ist enthalten. Es liefert PersonalLab seine bereits
-berechneten Dashboardwerte; PersonalLab berechnet Energiekosten nicht selbst.
+EnergieLab 0.6.6 liefert PersonalLab auch Wasser und Abwasser. Beide verwenden
+denselben Wasserzaehler; Vertrag, Kosten und Zahlungen bleiben getrennt.
 
 1. Paket nach /DATA/AppData/personal-lab-stack entpacken.
 
-2. Images bauen und als TAR exportieren:
+2. Vorhandene Installation direkt aktualisieren:
    cd /DATA/AppData/personal-lab-stack
-   chmod +x build-and-export.sh
+   chmod +x update.sh build-images.sh build-and-export.sh
+   ./update.sh
+
+   Das Skript sichert personallab.json, baut beide Images und erstellt die
+   beiden Container mit der bestehenden .env und dem bestehenden Datenordner neu.
+
+3. Optional Images als TAR fuer einen anderen Docker-Rechner exportieren:
    ./build-and-export.sh
+   docker load -i personallab-2.5.11-images.tar
 
-3. Optionaler Import auf einem anderen Docker-Rechner:
-   docker load -i personallab-2.5.7-energylab-0.4.5-images.tar
+4. Das bereits laufende EnergieLab 0.6.6 unverändert lassen. Das Build-Skript
+   baut und exportiert ausschließlich PersonalLab.
 
-4. Im BESTEHENDEN EnergieLab-Stack nur das Image auf energylab:0.4.5
-   aendern und ohne "Re-pull image" aktualisieren. Volumes unveraendert lassen.
-   Danach pruefen:
-   curl -fsS http://192.168.1.100:8090/api/personallab
+4a. Für die bessere Suche in .env die erreichbare Adresse des bereits
+    vorhandenen Containers paperless-rag-webui:3.0.4 eintragen:
+    PAPERLESS_RAG_URL=http://ADRESSE-DES-RAG-CONTAINERS
+    Die KI-Suche startet erst nach Enter oder einem Klick auf „Suchen“.
 
 5. Konfiguration anlegen:
    cp -n .env.example .env
@@ -28,4 +35,4 @@ berechneten Dashboardwerte; PersonalLab berechnet Energiekosten nicht selbst.
    docker compose --env-file .env -f compose.yaml up -d
    docker compose --env-file .env -f compose.yaml ps
 
-Aufruf: http://192.168.1.100:8094
+Aufruf: http://DEIN-SERVER:8094

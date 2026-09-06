@@ -62,6 +62,16 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
           history: [{ month: "2026-08", consumption: 245 }],
           readings: [{ date: "2026-08-25", value: 12345 }],
         },
+        {
+          id: "wastewater",
+          label: "Abwasser",
+          unit: "m³",
+          latest: { date: "2026-08-25", total: 200, unit: "m³", source: "water" },
+          consumption: { month: 4, year: 43, total: 200 },
+          finances: { month: { cost: 19, advance: 48 }, year: { cost: 190, advance: 192 } },
+          contracts: [{ id: 2, provider: "Abwasserzweckverband" }],
+          history: [{ date: "2026-08-25", total: 200, delta: 4, unit: "m³" }],
+        },
       ],
     }));
   });
@@ -69,14 +79,14 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
   const finance = await serve((request, response) => {
     response.setHeader("content-type", "application/json");
     if (request.url === "/api/households") {
-      return response.end(JSON.stringify({ items: [{ id: "home", name: "Müller" }] }));
+      return response.end(JSON.stringify({ items: [{ id: "home", name: "Musterhaushalt" }] }));
     }
     if (request.url.startsWith("/api/dashboard?")) {
       assert.match(request.url, /household_id=home/);
       return response.end(JSON.stringify({
         as_of: "2026-08-26",
         household: {
-          name: "Müller",
+          name: "Musterhaushalt",
           accounts: [{ id: "giro", name: "Girokonto", balance_cents: 123456 }],
         },
         metrics: { total_balance_cents: 123456 },
@@ -110,7 +120,14 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
   const property = defaults.areas.find(area => area.id === "property");
   await writeFile(dataFile, JSON.stringify({
     ...defaults,
-    areas: [{ ...property, subareas: [...property.subareas, { id: "utilities", name: "Versorger", description: "Alt", color: "#fff" }] }],
+    areas: [
+      { ...property, subareas: [...property.subareas, { id: "utilities", name: "Versorger", description: "Alt", color: "#fff" }] },
+      { id: "energy", name: "Meine Energie", description: "Eigene Struktur", tone: "teal", icon: "energy", subareas: [
+        { id: "electricity", name: "Strom" },
+        { id: "water", name: "Trinkwasser" },
+        { id: "gas", name: "Gas" },
+      ] },
+    ],
     documents: [{
       id: 7,
       title: "Stromabrechnung 2025",
@@ -140,8 +157,11 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
   try {
     await waitForJson(`http://127.0.0.1:${port}/api/health`);
     const state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
-    assert.equal(state.version, "2.5.7");
+    assert.equal(state.version, "2.5.11");
     assert.ok(state.areas.find(area => area.id === "property").subareas.some(subarea => subarea.id === "utilities"));
+    const migratedEnergy = state.areas.find(area => area.id === "energy");
+    assert.equal(migratedEnergy.name, "Meine Energie");
+    assert.deepEqual(migratedEnergy.subareas.map(subarea => subarea.id), ["electricity", "water", "wastewater", "gas"]);
     assert.deepEqual(
       { area: state.documents[0].area, subarea: state.documents[0].subarea },
       { area: "property", subarea: "utilities" },
@@ -149,10 +169,11 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
 
     const energyView = await waitForJson(`http://127.0.0.1:${port}/api/integrations/energy`);
     assert.equal(energyView.segments[0].label, "Strom");
+    assert.equal(energyView.segments.find(segment => segment.id === "wastewater").label, "Abwasser");
     assert.equal(energyView.sourceUrl, energy.url);
 
     const financeView = await waitForJson(`http://127.0.0.1:${port}/api/integrations/finance`);
-    assert.equal(financeView.household.name, "Müller");
+    assert.equal(financeView.household.name, "Musterhaushalt");
     assert.equal(financeView.accounts[0].balance_cents, 123456);
     assert.equal(financeView.credits[0].remaining_balance_cents, 440000);
     assert.equal(financeView.rates[0].amountCents, 17500);
@@ -188,7 +209,7 @@ test("merges analyzer results with Paperless documents by Paperless ID", async (
   });
   const analyzer = await serve((request, response) => {
     response.setHeader("content-type", "application/json");
-    if (request.url === "/api/documents?limit=200&offset=0") return response.end(JSON.stringify([{ paperless_id: 42, document_type: "Stromabrechnung", correspondent: "Vattenfall", summary: "Jahresabrechnung für Stromlieferung und Zählerstand", confidence: 0.97, analyzed_at: "2026-08-25T12:00:00Z" }]));
+    if (request.url === "/api/documents?limit=200&offset=0") return response.end(JSON.stringify([{ paperless_id: 42, document_type: "Stromabrechnung", correspondent: "Vattenfall", short_title: "Strom-Jahresabrechnung 2025 · Vattenfall", summary: "Jahresabrechnung für Stromlieferung und Zählerstand", keywords: ["Strom", "Zählerstand", "Abschlag"], category: "Energie", search_text: "Vertragskonto 4711 Verbrauch 2400 kWh", confidence: 0.97, analyzed_at: "2026-08-25T12:00:00Z" }]));
     response.statusCode = 404;
     return response.end("{}");
   });
@@ -214,6 +235,11 @@ test("merges analyzer results with Paperless documents by Paperless ID", async (
     assert.equal(state.documents[0].type, "Stromabrechnung");
     assert.equal(state.documents[0].correspondent, "Vattenfall");
     assert.equal(state.documents[0].analysisSummary, "Jahresabrechnung für Stromlieferung und Zählerstand");
+    assert.equal(state.documents[0].presentationTitle, "Strom-Jahresabrechnung 2025 · Vattenfall");
+    assert.equal(state.documents[0].presentationSummary, "Jahresabrechnung für Stromlieferung und Zählerstand");
+    assert.deepEqual(state.documents[0].analysisKeywords, ["Strom", "Zählerstand", "Abschlag"]);
+    assert.equal(state.documents[0].analysisCategory, "Energie");
+    assert.match(state.documents[0].analysisSearchText, /2400 kWh/);
     assert.equal(state.documents[0].analysisConfidence, 0.97);
     assert.deepEqual({ area: state.documents[0].area, subarea: state.documents[0].subarea }, { area: "property", subarea: "electricity" });
     const disableResponse = await fetch(`http://127.0.0.1:${port}/api/documents/42/disable`, { method: "POST" });
@@ -234,6 +260,108 @@ test("merges analyzer results with Paperless documents by Paperless ID", async (
     child.kill("SIGTERM");
     await Promise.race([new Promise(resolve => child.once("exit", resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);
     await Promise.all([close(paperless.server), close(analyzer.server)]);
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("uses the existing Paperless RAG container for semantic document search", async () => {
+  const rag = await serve(async (request, response) => {
+    assert.equal(request.method, "POST");
+    assert.equal(request.url, "/api/ask");
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    assert.deepEqual(JSON.parse(Buffer.concat(chunks).toString("utf8")), { question: "Was kostete der Roborock?" });
+    response.setHeader("content-type", "application/json");
+    response.end(JSON.stringify({
+      answer: "Der Roborock kostete 669,90 Euro.",
+      duration_ms: 123,
+      search: { answer_mode: "fast_fact" },
+      sources: [
+        { document_id: 77, title: "Rechnung", correspondent: "Janado", document_type: "Rechnung", document_date: "2026-08-20", excerpt: "Rechnungssumme 669,90 EUR", score: 0.98 },
+        { document_id: 999, title: "Nicht in PersonalLab", excerpt: "ausgeblendet", score: 0.8 },
+      ],
+    }));
+  });
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "personallab-rag-test-"));
+  const dataFile = path.join(temporary, "personallab.json");
+  const defaults = JSON.parse(await readFile(new URL("../local-api/default-state.json", import.meta.url), "utf8"));
+  await writeFile(dataFile, JSON.stringify({ ...defaults, documents: [{ id: 77, title: "Roborock", correspondent: "Janado", type: "Rechnung", date: "2026-08-20", area: "finance", subarea: "invoices", tags: [] }] }));
+  const port = await freePort();
+  const child = spawn(process.execPath, ["local-api/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, HOST: "127.0.0.1", PORT: port, DATA_FILE: dataFile, PAPERLESS_RAG_URL: rag.url, AUTO_SYNC_ENABLED: "false", SYNC_ON_START: "false" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    await waitForJson(`http://127.0.0.1:${port}/api/health`);
+    const state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
+    assert.equal(state.config.rag, true);
+    assert.equal(state.config.ragUrl, rag.url);
+    const response = await fetch(`http://127.0.0.1:${port}/api/search`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: "Was kostete der Roborock?" }) });
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.answer, "Der Roborock kostete 669,90 Euro.");
+    assert.equal(result.mode, "fast_fact");
+    assert.deepEqual(result.sources.map(source => source.documentId), [77]);
+    assert.equal(result.sources[0].excerpt, "Rechnungssumme 669,90 EUR");
+  } finally {
+    child.kill("SIGTERM");
+    await Promise.race([new Promise(resolve => child.once("exit", resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);
+    await close(rag.server);
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("derives useful invoice presentation data from Paperless OCR without storing the OCR text", async () => {
+  const paperless = await serve((request, response) => {
+    assert.equal(request.method, "GET");
+    response.setHeader("content-type", "application/json");
+    const pages = {
+      "/api/documents/?page_size=100": { results: [{
+        id: 77,
+        title: "Roborock Qrevo Curv2 ProX",
+        correspondent: null,
+        document_type: 5,
+        tags: [],
+        created: "2026-08-19",
+        content: "janado\nRechnungsnummer Rechnungsdatum\nRE923362 20.08.2026\nRechnung RE923362\nRoborock Qrevo Curv2 ProX\nRechnungssumme 669,90 EUR",
+      }], next: null },
+      "/api/correspondents/?page_size=100": { results: [], next: null },
+      "/api/document_types/?page_size=100": { results: [{ id: 5, name: "Rechnung" }], next: null },
+      "/api/tags/?page_size=100": { results: [], next: null },
+    };
+    const payload = pages[request.url];
+    if (!payload) { response.statusCode = 404; return response.end("{}"); }
+    return response.end(JSON.stringify(payload));
+  });
+  const temporary = await mkdtemp(path.join(os.tmpdir(), "personallab-invoice-test-"));
+  const dataFile = path.join(temporary, "personallab.json");
+  const port = await freePort();
+  const child = spawn(process.execPath, ["local-api/server.mjs"], {
+    cwd: new URL("..", import.meta.url),
+    env: { ...process.env, HOST: "127.0.0.1", PORT: port, DATA_FILE: dataFile, PAPERLESS_URL: paperless.url, PAPERLESS_TOKEN: "test", AUTO_SYNC_ENABLED: "false", SYNC_ON_START: "false" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  try {
+    await waitForJson(`http://127.0.0.1:${port}/api/health`);
+    assert.ok((await fetch(`http://127.0.0.1:${port}/api/sync`, { method: "POST" })).ok);
+    let state;
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
+      if (state.syncStatus !== "running") break;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    const [document] = state.documents;
+    assert.equal(document.correspondent, "Janado");
+    assert.equal(document.date, "2026-08-20");
+    assert.equal(document.presentationTitle, "Rechnung · Janado · Roborock Qrevo Curv2 ProX");
+    assert.match(document.presentationSummary, /RE923362.*669,90.*20\. August 2026/);
+    assert.deepEqual({ area: document.area, subarea: document.subarea }, { area: "finance", subarea: "invoices" });
+    assert.equal(Object.prototype.hasOwnProperty.call(document, "content"), false);
+  } finally {
+    child.kill("SIGTERM");
+    await Promise.race([new Promise(resolve => child.once("exit", resolve)), new Promise(resolve => setTimeout(resolve, 2000))]);
+    await close(paperless.server);
     await rm(temporary, { recursive: true, force: true });
   }
 });

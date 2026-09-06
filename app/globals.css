@@ -117,18 +117,31 @@ h2 { font-size: 28px; line-height: 1.13; }
 .quietButton:hover { border-color: #6b9d90; }
 .primaryButton.full { width: 100%; }
 
-.searchBox { width: min(390px,100%); height: 42px; display: flex; align-items: center; gap: 10px; margin: 0 0 18px auto; padding: 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 5px 20px rgba(54,48,38,.035); transition: border-color .15s ease, box-shadow .15s ease; }
+.searchBox { width: min(540px,100%); height: 46px; display: flex; align-items: center; gap: 10px; margin: 0 0 18px auto; padding: 0 6px 0 12px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: 0 5px 20px rgba(54,48,38,.035); transition: border-color .15s ease, box-shadow .15s ease; }
 .searchBox:focus-within { border-color: #69a292; box-shadow: 0 0 0 4px rgba(47,128,110,.1); }
 .searchBox svg { flex: 0 0 auto; color: var(--green); }
 .searchBox input { min-width: 0; flex: 1; border: 0; outline: 0; color: var(--ink); background: none; font-size: 12px; }
 .searchBox input::placeholder { color: #8c9894; }
 .searchClear { width: 26px; height: 26px; display: grid; flex: 0 0 26px; place-items: center; padding: 0; border: 0; border-radius: 8px; color: var(--muted); background: var(--surface-soft); cursor: pointer; }
 .searchClear:hover { color: var(--ink); background: #e6ecee; }
+.searchSubmit { height: 34px; flex: 0 0 auto; padding: 0 13px; border: 1px solid var(--green); border-radius: 9px; color: white; background: var(--green); font-size: 11px; font-weight: 900; cursor: pointer; }
+.searchSubmit:disabled { border-color: var(--line); color: #98a39f; background: var(--surface-soft); cursor: default; }
 .searchResultsIntro { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin: 4px 0 22px; padding: 22px 24px; border: 1px solid var(--line); border-radius: 18px; background: linear-gradient(135deg,#fff 0%,#f0f5f4 100%); }
 .searchResultsIntro h1 { margin-top: 4px; font-size: clamp(27px,3vw,40px); }
 .searchResultsIntro p:last-child { max-width: 760px; margin: 8px 0 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
 .aiSearchStatus { display: inline-flex; align-items: center; gap: 7px; flex: 0 0 auto; padding: 8px 11px; border: 1px solid var(--line); border-radius: 999px; color: var(--muted); background: white; font-size: 10px; font-weight: 900; white-space: nowrap; }
 .aiSearchStatus.active { border-color: #9cc8bb; color: var(--green); background: var(--green-soft); }
+.ragAnswerCard { display: flex; gap: 14px; margin: -6px 0 22px; padding: 18px 20px; border: 1px solid #9cc8bb; border-radius: 18px; background: linear-gradient(135deg,#f3faf7 0%,#fff 100%); box-shadow: 0 8px 28px rgba(29,91,73,.06); }
+.ragAnswerIcon { width: 38px; height: 38px; display: grid; flex: 0 0 38px; place-items: center; border-radius: 12px; color: var(--green); background: var(--green-soft); }
+.ragAnswerCard > div { min-width: 0; }
+.ragAnswerCard > div > p:not(.eyebrow) { margin: 5px 0 7px; color: var(--ink); font-size: 13px; line-height: 1.6; white-space: pre-line; }
+.ragAnswerCard small { color: var(--muted); font-size: 10px; font-weight: 750; }
+.ragLoadingCard { min-height: 108px; display: flex; align-items: center; justify-content: center; gap: 14px; margin: -6px 0 22px; padding: 20px; border: 1px solid #9cc8bb; border-radius: 18px; color: var(--green); background: linear-gradient(135deg,#f3faf7 0%,#fff 100%); }
+.ragLoadingCard svg { animation: ragSpin 1.1s linear infinite; }
+.ragLoadingCard div { display: grid; gap: 4px; }
+.ragLoadingCard strong { color: var(--ink); font-size: 14px; }
+.ragLoadingCard span { color: var(--muted); font-size: 11px; }
+@keyframes ragSpin { to { transform: rotate(360deg); } }
 kbd { border: 1px solid var(--line); border-radius: 7px; padding: 4px 8px; background: var(--surface-soft); color: #87938f; font-size: 11px; }
 
 .sectionTitle { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; margin-bottom: 17px; }

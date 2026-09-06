@@ -1,0 +1,10 @@
+.env
+.next
+.sites-runtime
+dist
+node_modules
+*.tar
+*.tar.gz
+__MACOSX
+companions/energylab-0.3.2
+companions/energylab-0.4.5

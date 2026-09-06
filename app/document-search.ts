@@ -6,6 +6,11 @@ export type SearchDocument = {
   correspondent?: string;
   type?: string;
   analysisSummary?: string;
+  presentationTitle?: string;
+  presentationSummary?: string;
+  analysisKeywords?: string[];
+  analysisCategory?: string;
+  analysisSearchText?: string;
   tags?: string[];
   date?: string;
 };
@@ -89,7 +94,12 @@ export function searchScore(document: SearchDocument, query: string) {
     { value: document.sourceTitle, weight: 4 },
     { value: document.correspondent, weight: 4 },
     { value: document.type, weight: 4 },
+    { value: document.presentationTitle, weight: 4 },
+    { value: document.presentationSummary, weight: 4 },
     { value: document.analysisSummary, weight: 3 },
+    { value: document.analysisKeywords?.join(" "), weight: 3 },
+    { value: document.analysisCategory, weight: 3 },
+    { value: document.analysisSearchText, weight: 2 },
     { value: document.tags?.join(" "), weight: 2 },
     { value: document.date, weight: 1 },
   ].map(field => ({ ...field, text: normalizeSearchText(field.value), words: words(String(field.value ?? "")) }));
@@ -110,7 +120,7 @@ export function searchScore(document: SearchDocument, query: string) {
   }
   const normalizedQuery = normalizeSearchText(query);
   if (normalizedQuery && fields[0].text.includes(normalizedQuery)) score += 200;
-  if (normalizedQuery && fields[5].text.includes(normalizedQuery)) score += 80;
+  if (normalizedQuery && fields.some(field => field.text.includes(normalizedQuery))) score += 80;
   return score;
 }
 

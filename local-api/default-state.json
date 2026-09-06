@@ -1,5 +1,5 @@
 {
-  "version": "2.5.7",
+  "version": "2.5.11",
   "areas": [
     {"id":"health","name":"Gesundheit & Befunde","description":"Befunde, Arztbriefe und gesundheitliche Unterlagen","tone":"teal","icon":"heart","subareas":[
       {"id":"findings","name":"Befunde","hint":"Untersuchungen und Ergebnisse"},
@@ -41,9 +41,10 @@
       {"id":"tires","name":"Reifen","hint":"Räder und Einlagerung"},
       {"id":"vehicle-other","name":"Sonstiges","hint":"Weitere Fahrzeugdokumente"}
     ]},
-    {"id":"energy","name":"Energie","description":"Strom, Wasser, Gas und Photovoltaik aus EnergieLab","tone":"teal","icon":"energy","subareas":[
+    {"id":"energy","name":"Energie","description":"Strom, Gas, Wasser, Abwasser und Photovoltaik aus EnergieLab","tone":"teal","icon":"energy","subareas":[
       {"id":"electricity","name":"Strom","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
       {"id":"water","name":"Wasser","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
+      {"id":"wastewater","name":"Abwasser","hint":"Wasserverbrauch, eigener Vertrag, Zahlungen und Kosten"},
       {"id":"gas","name":"Gas","hint":"Verbrauch, Vertrag, Abschlag und Zählerstand"},
       {"id":"pv","name":"Photovoltaik","hint":"Eigenverbrauch, Ersparnis, Historie und Zählerstand"}
     ]},

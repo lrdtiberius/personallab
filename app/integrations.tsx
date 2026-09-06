@@ -10,7 +10,7 @@ type EnergyFinance = { variable?: number; baseFee?: number; cost?: number; advan
 type EnergyReading = { id?: number; date: string; total: number; delta?: number | null; unit: string; source?: string };
 type EnergyContract = { id: number; provider: string; validFrom: string; validTo?: string | null; unitPrice: number; unitPriceLabel: string; baseFeeMonthly: number; advanceMonthly: number; active: boolean };
 type EnergySegment = {
-  id: "electricity" | "water" | "gas" | "pv";
+  id: "electricity" | "water" | "wastewater" | "gas" | "pv";
   label: string;
   unit: string;
   latest?: EnergyReading | null;
