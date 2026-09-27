@@ -157,7 +157,7 @@ test("binds EnergyLab and FinanzLab as read-only PersonalLab views", async () =>
   try {
     await waitForJson(`http://127.0.0.1:${port}/api/health`);
     const state = await waitForJson(`http://127.0.0.1:${port}/api/state`);
-    assert.equal(state.version, "2.5.11");
+    assert.equal(state.version, "2.7.2");
     assert.ok(state.areas.find(area => area.id === "property").subareas.some(subarea => subarea.id === "utilities"));
     const migratedEnergy = state.areas.find(area => area.id === "energy");
     assert.equal(migratedEnergy.name, "Meine Energie");

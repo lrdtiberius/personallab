@@ -15,7 +15,7 @@ test("recognizes German month-year payroll names and corrections", () => {
 
 test("turns account filenames into readable names without account numbers", () => {
   const title = friendlyDocumentTitle({ title: "Konto_1175007427-Auszug_2026_0007", type: "Kontoauszug", correspondent: "Sparkasse Unstrut-Hainich", date: "01.08.2026" });
-  assert.equal(title, "Kontoauszug · Juli 2026 · Sparkasse Unstrut-Hainich");
+  assert.equal(title, "Kontoauszug · 2026 · Sparkasse Unstrut-Hainich");
   assert.equal(title.includes("1175007427"), false);
 });
 

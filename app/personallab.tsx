@@ -1,10 +1,9 @@
 "use client";
 
-import { useEffect, useMemo, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type DragEvent, type ReactNode } from "react";
 import { EnergyIntegration, FinanceIntegration } from "./integrations";
 import { DEFAULT_PAGE_LAYOUTS, normalizePageLayouts, type PageBlockId, type PageLayout, type PageLayouts } from "./page-layouts";
-import { documentSummary, documentYear, friendlyDocumentTitle, sortDocumentsByDate, type DocumentSortDirection } from "./document-presentation";
-import { searchDocuments } from "./document-search";
+import { documentSummary, documentYear, friendlyDocumentTitle, sortDocumentsByDate } from "./document-presentation";
 
 type Screen = "overview" | "documents" | "area" | "home-assistant" | "settings";
 type Tone = "green" | "blue" | "orange" | "violet" | "sand" | "rose" | "slate" | "teal";
@@ -27,10 +26,12 @@ type DocumentItem = {
   correspondent: string;
   type: string;
   date: string;
+  added?: string;
   area: string;
   subarea: string;
   group?: string;
   tileId?: string;
+  secondaryTileIds?: string[];
   isNew?: boolean;
   assignmentSource?: "rule" | "manual" | "unassigned" | "review";
   metadataSource?: "paperless" | "manual";
@@ -48,6 +49,8 @@ type DocumentItem = {
   analysisKeywords?: string[];
   analysisCategory?: string;
   analysisSearchText?: string;
+  duplicateSignature?: string;
+  accountLabel?: string;
   tags?: string[];
 };
 type AppConfig = { paperless: boolean; paperlessUrl: string; analyzer: boolean; analyzerUrl: string; rag: boolean; ragUrl: string; homeAssistant: boolean; homeAssistantUrl: string; energyLab: boolean; financeLab: boolean; autoSync: boolean; syncMinutes: number };
@@ -67,12 +70,30 @@ type TreeNodeEditorState =
 
 type DropDestination = { areaId: string; rootId: string; tileId: string; group?: string; label: string };
 type UndoMove = { documents: DocumentItem[]; message: string } | null;
+type YearSelection = { key: string; value: string } | null;
 type FinanceAccountAssignments = Record<string, string[]>;
 type FinanceDataSelections = Record<string, string[]>;
 type EnergyProviderAssignments = Record<string, string[]>;
 type EnergyMetricSelections = Record<string, string[]>;
+type DocumentSortMode = "relevance" | "desc" | "asc" | "added-desc" | "title-asc" | "title-desc" | "correspondent-asc" | "type-asc";
+type DocumentQuickFilter = "all" | "new" | "crosslinks" | "without-analysis" | "duplicates";
 
 const nodeUid = (areaId: string, node: Subarea) => node.uid ?? `tile:${areaId}:${node.id}`;
+const secondaryTiles = (doc: DocumentItem) => Array.isArray(doc.secondaryTileIds) ? doc.secondaryTileIds : [];
+const documentHasTile = (doc: DocumentItem, uid: string) => doc.tileId === uid || secondaryTiles(doc).includes(uid);
+const documentInArea = (doc: DocumentItem, areaId: string) => doc.area === areaId || secondaryTiles(doc).some(uid => uid === `area:${areaId}` || uid.startsWith(`tile:${areaId}:`));
+const documentDuplicateKey = (doc: DocumentItem) => String(doc.duplicateSignature ?? "").trim();
+const sortDocuments = (documents: DocumentItem[], mode: DocumentSortMode) => {
+  if (mode === "relevance") return documents;
+  if (mode === "desc" || mode === "asc") return sortDocumentsByDate(documents, mode);
+  const sorted = [...documents];
+  if (mode === "added-desc") return sorted.sort((left, right) => String(right.added ?? right.date).localeCompare(String(left.added ?? left.date)) || right.id - left.id);
+  if (mode === "title-asc") return sorted.sort((left, right) => displayDocumentTitle(left).localeCompare(displayDocumentTitle(right), "de") || right.id - left.id);
+  if (mode === "title-desc") return sorted.sort((left, right) => displayDocumentTitle(right).localeCompare(displayDocumentTitle(left), "de") || right.id - left.id);
+  if (mode === "correspondent-asc") return sorted.sort((left, right) => String(left.correspondent).localeCompare(String(right.correspondent), "de") || displayDocumentTitle(left).localeCompare(displayDocumentTitle(right), "de"));
+  if (mode === "type-asc") return sorted.sort((left, right) => String(left.type).localeCompare(String(right.type), "de") || displayDocumentTitle(left).localeCompare(displayDocumentTitle(right), "de"));
+  return sorted;
+};
 const walkNodes = (nodes: Subarea[]): Subarea[] => nodes.flatMap(node => [node, ...walkNodes(node.children ?? [])]);
 const descendantUids = (areaId: string, node: Subarea): string[] => walkNodes([node]).map(item => nodeUid(areaId, item));
 const normalizeNode = (areaId: string, node: Subarea): Subarea => ({ ...node, uid: nodeUid(areaId, node), hint: node.hint ?? "", groups: Array.isArray(node.groups) ? node.groups : [], children: (node.children ?? []).map(child => normalizeNode(areaId, child)) });
@@ -91,7 +112,105 @@ const moveNodeTree = (areaId: string, nodes: Subarea[], uid: string, direction: 
 };
 const findNode = (areaId: string, nodes: Subarea[], uid: string) => walkNodes(nodes).find(node => nodeUid(areaId, node) === uid);
 const isContract = (doc: DocumentItem) => doc.area === "contracts" || /vertrag|police|abonnement|mitgliedschaft|tarif/i.test(`${doc.title} ${doc.type}`);
-const cleanCorrespondent = (value: string) => !value.trim() || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(value.trim()) ? "Nicht erkannt" : value.trim();
+const cleanCorrespondent = (value: string) => /^(?:null|undefined|\d+)$/i.test(value.trim()) || !value.trim() || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(value.trim()) ? "Nicht erkannt" : value.trim();
+const salaryMonths: Array<[RegExp, string]> = [
+  [/januar/i, "Januar"], [/februar/i, "Februar"], [/(?:märz|maerz)/i, "März"], [/april/i, "April"], [/mai/i, "Mai"], [/juni/i, "Juni"],
+  [/juli/i, "Juli"], [/august/i, "August"], [/september/i, "September"], [/oktober/i, "Oktober"], [/november/i, "November"], [/dezember/i, "Dezember"],
+];
+const salaryMonthNames = ["", "Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
+function salaryPeriod(document: DocumentItem) {
+  const sources = [document.metadataSource === "manual" ? document.title : "", document.presentationTitle, document.title, document.sourceTitle, document.analysisSummary].filter(Boolean).map(String);
+  for (const source of sources) {
+    for (const [pattern, month] of salaryMonths) {
+      const match = source.match(new RegExp(`\\b${pattern.source}\\s+((?:19|20)\\d{2})\\b`, "i"));
+      if (match) return `${month} ${match[1]}`;
+    }
+    const iso = source.match(/\b((?:19|20)\d{2})[-/.](0?[1-9]|1[0-2])(?:[-/.][0-3]?\d)?\b/);
+    if (iso) return `${salaryMonthNames[Number(iso[2])]} ${iso[1]}`;
+    const german = source.match(/\b[0-3]?\d[./-](0?[1-9]|1[0-2])[./-]((?:19|20)\d{2})\b/);
+    if (german) return `${salaryMonthNames[Number(german[1])]} ${german[2]}`;
+  }
+  const fallback = String(document.date ?? "").match(/((?:19|20)\d{2})-(0?[1-9]|1[0-2])|(?:[0-3]?\d\.)?(0?[1-9]|1[0-2])\.((?:19|20)\d{2})/);
+  if (!fallback) return "";
+  const month = Number(fallback[2] ?? fallback[3]);
+  return `${salaryMonthNames[month]} ${fallback[1] ?? fallback[4]}`;
+}
+
+function statementMonth(month: number, year: number, previousWhenEarly = false, day = 31) {
+  if (month < 1 || month > 12 || year < 1900 || year > 2100) return "";
+  const date = new Date(Date.UTC(year, month - 1, Math.max(1, Math.min(day, 28))));
+  if (previousWhenEarly && day <= 5) date.setUTCMonth(date.getUTCMonth() - 1);
+  return `${salaryMonthNames[date.getUTCMonth() + 1]} ${date.getUTCFullYear()}`;
+}
+
+function statementPeriod(document: DocumentItem) {
+  const namedSources = [document.metadataSource === "manual" ? document.title : "", document.title, document.sourceTitle, document.presentationTitle].filter(Boolean).map(String);
+  for (const source of namedSources) {
+    const monthYear = source.match(/(?:konto[\s_-]*auszug|auszug)[^\d]{0,24}(0?[1-9]|1[0-2])[./-]((?:19|20)\d{2})\b/i)
+      ?? source.match(/\b(0?[1-9]|1[0-2])[./-]((?:19|20)\d{2})\b/);
+    if (monthYear) return statementMonth(Number(monthYear[1]), Number(monthYear[2]));
+    const numberedStatement = source.match(/\b((?:19|20)\d{2})[_-]0{0,3}(0?[1-9]|1[0-2])(?:\D|$)/);
+    if (numberedStatement) return statementMonth(Number(numberedStatement[2]), Number(numberedStatement[1]));
+  }
+
+  const contentDates = [...String(document.analysisSummary ?? "").matchAll(/\b(0?[1-9]|[12]\d|3[01])[./-](0?[1-9]|1[0-2])[./-]((?:19|20)\d{2})\b/g)]
+    .map(match => ({ day: Number(match[1]), month: Number(match[2]), year: Number(match[3]) }))
+    .sort((left, right) => right.year - left.year || right.month - left.month || right.day - left.day);
+  if (contentDates[0]) return statementMonth(contentDates[0].month, contentDates[0].year);
+
+  for (const source of namedSources) {
+    const compactDate = source.match(/\b((?:19|20)\d{2})(0[1-9]|1[0-2])([0-3]\d)\b/);
+    if (compactDate) return statementMonth(Number(compactDate[2]), Number(compactDate[1]), true, Number(compactDate[3]));
+  }
+  const fallback = String(document.date ?? "").match(/\b((?:19|20)\d{2})-(0[1-9]|1[0-2])-([0-3]\d)\b/);
+  return fallback ? statementMonth(Number(fallback[2]), Number(fallback[1]), true, Number(fallback[3])) : "";
+}
+
+function statementAccountLabel(document: DocumentItem) {
+  const evidence = `${document.accountLabel ?? ""} ${document.title} ${document.presentationTitle ?? ""} ${document.analysisSummary ?? ""}`;
+  if (/tagesgeld/i.test(evidence)) return "Tagesgeld";
+  if (/rahmenkredit/i.test(evidence)) return "Rahmenkredit";
+  if (/hauskredit/i.test(evidence)) return "Hauskredit";
+  if (/extra[\s_-]*konto/i.test(evidence)) return "Extra-Konto";
+  if (/depot|wertpapier/i.test(evidence)) return "Depot";
+  if (/bauspar/i.test(evidence)) return "Bausparkonto";
+  if (/privat[\s_-]*giro|girokonto/i.test(evidence)) return "Girokonto";
+  return "";
+}
+
+function statementInstitution(document: DocumentItem) {
+  const correspondent = cleanCorrespondent(document.correspondent);
+  const evidence = `${correspondent} ${document.title} ${document.sourceTitle ?? ""} ${document.presentationTitle ?? ""}`;
+  if (/sparkasse/i.test(evidence)) return "Sparkasse";
+  if (/\bing\b|ing-diba/i.test(evidence)) return "ING";
+  if (/wüstenrot|wuestenrot/i.test(evidence)) return "Wüstenrot";
+  if (/\blbs\b/i.test(evidence)) return correspondent === "Nicht erkannt" ? "LBS" : correspondent;
+  if (/dekabank|\bdeka\b/i.test(evidence)) return "DekaBank";
+  if (/coinbase/i.test(evidence)) return "Coinbase";
+  if (/weltsparen/i.test(evidence)) return "WeltSparen";
+  return correspondent === "Nicht erkannt" ? "" : correspondent;
+}
+
+function displayDocumentTitle(document: DocumentItem) {
+  const fallback = friendlyDocumentTitle(document).replace(/\s*[–-]\s*kopie(?:\s+\d+)?\s*$/i, "").trim();
+  const evidence = `${document.title} ${document.sourceTitle ?? ""} ${document.presentationTitle ?? ""} ${document.type}`;
+  if (/konto[\s_-]*auszug/i.test(evidence)) {
+    const period = statementPeriod(document);
+    if (!period) return fallback;
+    const institution = statementInstitution(document);
+    const account = statementAccountLabel(document);
+    return `${[institution, account].filter(Boolean).join(" ")}${institution || account ? " – " : ""}Kontoauszug ${period}`;
+  }
+  if (!/(?:gehaltsabrechnung|lohnabrechnung|lohnzettel|entgeltabrechnung|personalabrechnung)/i.test(evidence)) return fallback;
+  if (/(?:arbeitsvertrags)?verdienstbescheinigung|lohnsteuerbescheinigung/i.test(evidence)) return fallback;
+  const period = salaryPeriod(document);
+  if (!period) return fallback;
+  const correspondent = cleanCorrespondent(document.correspondent);
+  const employer = /^tupag(?:\b|[-_])/i.test(correspondent) ? "Tupag" : correspondent;
+  const prefix = employer === "Nicht erkannt" ? "" : `${employer} – `;
+  const correction = /korrektur/i.test(evidence) ? " · Korrektur" : "";
+  return `${prefix}Gehaltsabrechnung ${period}${correction}`;
+}
 const groupName = (doc: DocumentItem, fallback: string) => {
   const group = doc.group?.trim() ?? "";
   if (/^\d+$/.test(group)) return cleanCorrespondent(doc.correspondent) || fallback;
@@ -100,11 +219,15 @@ const groupName = (doc: DocumentItem, fallback: string) => {
 const documentsForTreeNode = (areaId: string, rootId: string, node: Subarea, documents: DocumentItem[]) => {
   const uids = new Set(descendantUids(areaId, node));
   const names = new Set(walkNodes([node]).map(item => item.name));
-  return documents.filter(doc => doc.area === areaId && doc.subarea === rootId && (
-    uids.has(doc.tileId ?? "")
-    || (node.id === rootId && !doc.tileId)
-    || (node.id !== rootId && names.has(groupName(doc, "Sonstiges")))
-  ));
+  return documents.filter(doc => {
+    const primaryMatch = doc.area === areaId && doc.subarea === rootId && (
+      uids.has(doc.tileId ?? "")
+      || (node.id === rootId && !doc.tileId)
+      || (node.id !== rootId && names.has(groupName(doc, "Sonstiges")))
+    );
+    const secondaryMatch = secondaryTiles(doc).some(uid => uids.has(uid));
+    return documentInArea(doc, areaId) && (primaryMatch || secondaryMatch);
+  });
 };
 const findTreeSelection = (area: Area, key: string | null) => {
   if (!key) return null;
@@ -129,9 +252,71 @@ const hierarchyChoice = (area: Area | undefined, tileId?: string, rootId?: strin
   const selection = findTreeSelection(area, tileId || rootId || null);
   return selection ? { rootId: selection.root.id, tileId: nodeUid(area.id, selection.node), path: selection.path } : null;
 };
-const documentSearchText = (doc: DocumentItem) => `${friendlyDocumentTitle(doc)} ${doc.title} ${doc.correspondent} ${doc.type} ${doc.presentationTitle ?? ""} ${doc.presentationSummary ?? ""} ${doc.analysisSummary ?? ""} ${(doc.analysisKeywords ?? []).join(" ")} ${doc.analysisCategory ?? ""} ${doc.analysisSearchText ?? ""}`.toLowerCase();
+const documentSearchText = (doc: DocumentItem) => `${displayDocumentTitle(doc)} ${doc.title} ${doc.correspondent} ${doc.type} ${doc.presentationTitle ?? ""} ${doc.presentationSummary ?? ""} ${doc.analysisSummary ?? ""} ${(doc.analysisKeywords ?? []).join(" ")} ${doc.analysisCategory ?? ""} ${doc.analysisSearchText ?? ""}`.toLowerCase();
+const normalizeSearchText = (value: unknown) => String(value ?? "")
+  .toLocaleLowerCase("de-DE")
+  .normalize("NFD")
+  .replace(/[\u0300-\u036f]/g, "")
+  .replace(/ß/g, "ss")
+  .replace(/[^a-z0-9]+/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+const searchSynonyms: Record<string, string[]> = {
+  gehaltsabrechnung: ["gehaltsabrechnung", "lohnabrechnung", "entgeltabrechnung", "lohnzettel"],
+  lohnabrechnung: ["lohnabrechnung", "gehaltsabrechnung", "entgeltabrechnung", "lohnzettel"],
+  lohnzettel: ["lohnzettel", "lohnabrechnung", "gehaltsabrechnung", "entgeltabrechnung"],
+  gehalt: ["gehalt", "lohn", "entgelt"],
+  steueridentifikationsnummer: ["steueridentifikationsnummer", "steuer id", "steuerid", "idnr", "bundeszentralamt fur steuern"],
+  steuerid: ["steuerid", "steuer id", "steueridentifikationsnummer", "idnr", "bundeszentralamt fur steuern"],
+  kontoauszug: ["kontoauszug", "kontoumsatz", "umsatzanzeige"],
+  arbeitsunfahigkeit: ["arbeitsunfahigkeit", "au bescheinigung", "krankschreibung", "krankenschein"],
+  krankschreibung: ["krankschreibung", "arbeitsunfahigkeit", "au bescheinigung", "krankenschein"],
+};
+const searchTermMatches = (field: string, term: string) => {
+  if (!field || !term) return false;
+  if (term.includes(" ")) return field.includes(term);
+  return field.split(" ").some(word => word === term || (term.length >= 4 && word.startsWith(term)));
+};
+const strictDocumentSearch = (documents: DocumentItem[], query: string) => {
+  const trimmed = query.trim();
+  const directId = trimmed.match(/^#?(\d+)$/)?.[1];
+  if (directId) {
+    const direct = documents.find(document => document.id === Number(directId));
+    if (direct) return [direct];
+  }
+  const phrase = normalizeSearchText(trimmed);
+  if (!phrase) return [];
+  const tokens = [...new Set(phrase.split(" ").filter(token => token.length >= 2 || /^\d+$/.test(token)))];
+  if (!tokens.length) return [];
+  const termGroups = tokens.map(token => [...new Set([token, ...(searchSynonyms[token] ?? [])].map(normalizeSearchText).filter(Boolean))]);
+  return documents.flatMap(document => {
+    const title = normalizeSearchText(`${displayDocumentTitle(document)} ${document.title} ${document.presentationTitle ?? ""}`);
+    const type = normalizeSearchText(document.type);
+    const correspondent = normalizeSearchText(document.correspondent);
+    const keywords = normalizeSearchText(`${(document.analysisKeywords ?? []).join(" ")} ${document.analysisCategory ?? ""} ${(document.tags ?? []).join(" ")}`);
+    const summary = normalizeSearchText(`${document.presentationSummary ?? ""} ${document.analysisSummary ?? ""}`);
+    const date = normalizeSearchText(`${document.date} ${documentYear(document)}`);
+    const fields = [title, type, correspondent, keywords, summary, date];
+    if (!termGroups.every(alternatives => alternatives.some(term => fields.some(field => searchTermMatches(field, term))))) return [];
+
+    let score = 0;
+    if (title === phrase) score += 400;
+    if (type === phrase) score += 300;
+    if (correspondent === phrase) score += 250;
+    if (title.includes(phrase)) score += 180;
+    if (type.includes(phrase)) score += 150;
+    if (correspondent.includes(phrase)) score += 120;
+    if (keywords.includes(phrase)) score += 80;
+    if (summary.includes(phrase)) score += 45;
+    for (const alternatives of termGroups) {
+      const best = Math.max(...alternatives.map(term => searchTermMatches(title, term) ? 40 : searchTermMatches(type, term) ? 32 : searchTermMatches(correspondent, term) ? 24 : searchTermMatches(keywords, term) ? 18 : searchTermMatches(summary, term) ? 10 : searchTermMatches(date, term) ? 3 : 0));
+      score += best;
+    }
+    return [{ document, score }];
+  }).sort((left, right) => right.score - left.score || String(right.document.date).localeCompare(String(left.document.date)) || right.document.id - left.document.id).map(result => result.document);
+};
 const documentCorrespondentLabel = (value: string) => cleanCorrespondent(value);
-const documentTypeLabel = (value: string) => !value.trim() || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(value.trim()) ? "Dokumenttyp offen" : value.trim();
+const documentTypeLabel = (value: string) => /^(?:null|undefined|\d+)$/i.test(value.trim()) || !value.trim() || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(value.trim()) ? "Dokumenttyp offen" : value.trim();
 
 function isoDate(value?: string) {
   if (!value) return "";
@@ -424,28 +609,55 @@ function AreaTile({ area, editMode, onOpen, onEdit }: { area: Area; editMode: bo
   return <button className={`areaTile tone-${area.tone} ${editMode ? "editable" : ""}`} onClick={editMode ? onEdit : onOpen}>{editMode && <span className="editFlag"><Icon name="edit" size={13}/>Ändern</span>}<span className="areaIcon"><Icon name={area.icon} size={25}/></span><span className="areaText"><strong>{area.name}</strong><small>{area.description}</small></span><span className="areaCount"><strong>{area.count.toLocaleString("de-DE")}</strong><small>Dokumente</small></span><Icon name={editMode ? "move" : "next"} size={18}/></button>;
 }
 
-function DocumentList({ title, subtitle, items, onOpen, editMode, selected, setSelected, assign, dragDocument, sortDirection = "desc", setSortDirection }: { title: string; subtitle: string; items: DocumentItem[]; onOpen: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument?: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection?: DocumentSortDirection; setSortDirection?: (direction: DocumentSortDirection) => void }) {
+function DocumentList({ title, subtitle, items, onOpen, editMode, selected, setSelected, assign, dragDocument, sortDirection = "desc", setSortDirection, relevanceAvailable = false }: { title: string; subtitle: string; items: DocumentItem[]; onOpen: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument?: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection?: DocumentSortMode; setSortDirection?: (direction: DocumentSortMode) => void; relevanceAvailable?: boolean }) {
   const toggle = (id: number) => setSelected(selected.includes(id) ? selected.filter(item => item !== id) : [...selected, id]);
-  const sortedItems = useMemo(() => sortDocumentsByDate(items, sortDirection), [items, sortDirection]);
+  const [quickFilter, setQuickFilter] = useState<DocumentQuickFilter>("all");
+  const [visibleCount, setVisibleCount] = useState(50);
+  const duplicateCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const document of items) {
+      const key = documentDuplicateKey(document);
+      if (key) counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [items]);
+  const filteredItems = useMemo(() => items.filter(document => {
+    if (quickFilter === "new") return Boolean(document.isNew);
+    if (quickFilter === "crosslinks") return secondaryTiles(document).length > 0;
+    if (quickFilter === "without-analysis") return !String(document.analysisSummary ?? document.presentationSummary ?? "").trim();
+    if (quickFilter === "duplicates") return (duplicateCounts.get(documentDuplicateKey(document)) ?? 0) > 1;
+    return true;
+  }), [duplicateCounts, items, quickFilter]);
+  const sortedItems = useMemo(() => sortDocuments(filteredItems, sortDirection), [filteredItems, sortDirection]);
+  const visibleItems = sortedItems.slice(0, visibleCount);
+  const listKey = filteredItems.map(document => document.id).join(",");
+  useEffect(() => setVisibleCount(50), [listKey, sortDirection]);
   return <section className="documentPanel">
-    <div className="panelHead"><div><p className="eyebrow">DOKUMENTE</p><h2>{title}</h2><p>{subtitle}</p></div><div className="documentListActions"><label className="sortControl"><Icon name="clock" size={15}/><span>Sortierung</span><select aria-label="Dokumente sortieren" value={sortDirection} onChange={event => setSortDirection?.(event.target.value as DocumentSortDirection)}><option value="desc">Datum: neueste zuerst</option><option value="asc">Datum: älteste zuerst</option></select></label>{editMode ? <div className="selectionActions"><span>{selected.length} ausgewählt</span><button className="primaryButton" disabled={!selected.length} onClick={assign}>Neu zuordnen</button></div> : <span className="dragHint"><Icon name="move" size={15}/>Auf ein Ziel links ziehen</span>}</div></div>
-    <div className="docTable"><div className="docTableHead"><span>Dokument und Inhaltsangabe</span><span>Typ</span><span>Datum</span><span/></div>{sortedItems.length ? sortedItems.map(doc => {
+    <div className="panelHead"><div><p className="eyebrow">DOKUMENTE</p><h2>{title}</h2><p>{subtitle}{quickFilter !== "all" ? ` · ${sortedItems.length} gefiltert` : ""}</p></div><div className="documentListActions"><label className="sortControl"><Icon name="search" size={15}/><span>Filter</span><select aria-label="Dokumente filtern" value={quickFilter} onChange={event => setQuickFilter(event.target.value as DocumentQuickFilter)}><option value="all">Alle Dokumente</option><option value="new">Nur neue</option><option value="crosslinks">Mit Querverweisen</option><option value="without-analysis">Ohne Inhaltsanalyse</option><option value="duplicates">Inhaltsgleiche Dokumente</option></select></label><label className="sortControl"><Icon name="clock" size={15}/><span>Sortierung</span><select aria-label="Dokumente sortieren" value={sortDirection} onChange={event => setSortDirection?.(event.target.value as DocumentSortMode)}>{relevanceAvailable && <option value="relevance">Beste Treffer zuerst</option>}<option value="desc">Datum: neueste zuerst</option><option value="asc">Datum: älteste zuerst</option><option value="added-desc">Zuletzt hinzugefügt</option><option value="title-asc">Titel: A–Z</option><option value="title-desc">Titel: Z–A</option><option value="correspondent-asc">Korrespondent: A–Z</option><option value="type-asc">Dokumenttyp: A–Z</option></select></label>{editMode ? <div className="selectionActions"><span>{selected.length} ausgewählt</span><button className="primaryButton" disabled={!selected.length} onClick={assign}>Neu zuordnen</button></div> : <span className="dragHint"><Icon name="move" size={15}/>Auf ein Ziel links ziehen</span>}</div></div>
+    <div className="docTable"><div className="docTableHead"><span>Dokument und Inhaltsangabe</span><span>Typ</span><span>Datum</span><span/></div>{visibleItems.length ? visibleItems.map(doc => {
       const contract = contractPresentation(doc);
-      const displayTitle = friendlyDocumentTitle(doc);
-      const summary = documentSummary(doc, 150);
+      const displayTitle = displayDocumentTitle(doc);
+      const summary = documentSummary(doc, 240);
       const correspondent = documentCorrespondentLabel(doc.correspondent);
       const type = documentTypeLabel(doc.type);
-      return <button draggable className={`docRow ${selected.includes(doc.id) ? "selected" : ""} ${contract ? `contract-${contract.status}` : ""}`} key={doc.id} onDragStart={event => dragDocument?.(event, doc)} onClick={() => editMode ? toggle(doc.id) : onOpen(doc)} title="Dokument auf einen Ablageort in der linken Liste ziehen">{editMode && <span className="rowCheck">{selected.includes(doc.id) && <Icon name="check" size={14}/>}</span>}<span className="docIdentity"><span className="docIcon"><Icon name="file" size={18}/></span><span className="docIdentityText"><strong title={displayTitle !== doc.title ? `Originaltitel: ${doc.title}` : undefined}>{displayTitle}</strong><small className="documentSummary">{summary}</small><small className="docMeta">{correspondent} · {type} · Paperless #{doc.id}</small></span>{doc.isNew && <em>Neu</em>}{contract && <em className={`contractBadge ${contract.status}`}>{contract.label}</em>}</span><span className="typeTag">{type}</span><span className="docDate">{doc.date}</span><Icon name="move" size={18}/></button>;
+      const duplicateCount = duplicateCounts.get(documentDuplicateKey(doc)) ?? 0;
+      const links = secondaryTiles(doc).length;
+      return <button draggable className={`docRow ${selected.includes(doc.id) ? "selected" : ""} ${contract ? `contract-${contract.status}` : ""}`} key={doc.id} onDragStart={event => dragDocument?.(event, doc)} onClick={() => editMode ? toggle(doc.id) : onOpen(doc)} title="Dokument auf einen Ablageort in der linken Liste ziehen">{editMode && <span className="rowCheck">{selected.includes(doc.id) && <Icon name="check" size={14}/>}</span>}<span className="docIdentity"><span className="docIcon"><Icon name="file" size={18}/></span><span className="docIdentityText"><strong title={displayTitle !== doc.title ? `Originaltitel: ${doc.title}` : undefined}>{displayTitle}</strong><small className="documentSummary">{summary}</small><small className="docMeta">{correspondent} · {type} · Paperless #{doc.id}{links ? ` · ${links} Querverweis${links === 1 ? "" : "e"}` : ""}{duplicateCount > 1 ? ` · ${duplicateCount} inhaltsgleiche Dokumente` : ""}</small></span>{doc.isNew && <em>Neu</em>}{contract && <em className={`contractBadge ${contract.status}`}>{contract.label}</em>}</span><span className="typeTag">{type}</span><span className="docDate">{doc.date}</span><Icon name="move" size={18}/></button>;
     }) : <div className="empty"><Icon name="search" size={24}/><strong>Keine passenden Dokumente</strong><p>In dieser Auswahl wurde nichts gefunden.</p></div>}</div>
+    {visibleItems.length < sortedItems.length && <div className="documentListActions"><button className="quietButton" onClick={() => setVisibleCount(count => count + 50)}>Weitere {Math.min(50, sortedItems.length - visibleItems.length)} anzeigen</button><span className="dragHint">{visibleItems.length} von {sortedItems.length} Dokumenten</span></div>}
   </section>;
 }
 
-function SearchResults({ documents, query, searchRevision, setQuery, analyzer, rag, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; query: string; searchRevision: number; setQuery: (value: string) => void; analyzer: boolean; rag: boolean; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void }) {
-  const localResults = useMemo(() => searchDocuments(documents.map(document => ({ ...document, searchTitle: friendlyDocumentTitle(document) })), query), [documents, query]);
+function SearchResults({ documents, query, searchRevision, setQuery, analyzer, rag, openDocument, editMode, selected, setSelected, assign, dragDocument }: { documents: DocumentItem[]; query: string; searchRevision: number; setQuery: (value: string) => void; analyzer: boolean; rag: boolean; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortMode; setSortDirection: (direction: DocumentSortMode) => void }) {
+  const localResults = useMemo(() => strictDocumentSearch(documents, query), [documents, query]);
+  const [searchSort, setSearchSort] = useState<DocumentSortMode>("relevance");
+  useEffect(() => setSearchSort("relevance"), [query]);
   const [ragSearch, setRagSearch] = useState<RagSearchState>({ status: "idle", answer: "", sources: [] });
+  const [requestedQuery, setRequestedQuery] = useState("");
+  const [ragRequestRevision, setRagRequestRevision] = useState(0);
   useEffect(() => {
     const searchQuery = query.trim();
-    if (!rag || searchQuery.length < 2) {
+    if (!rag || searchQuery.length < 2 || requestedQuery !== searchQuery) {
       setRagSearch({ status: "idle", answer: "", sources: [] });
       return;
     }
@@ -462,37 +674,36 @@ function SearchResults({ documents, query, searchRevision, setQuery, analyzer, r
         setRagSearch({ status: "error", answer: "", sources: [] });
       });
     return () => controller.abort();
-  }, [query, rag, searchRevision]);
+  }, [query, rag, ragRequestRevision, requestedQuery, searchRevision]);
   const results = useMemo(() => {
-    if (!rag || ragSearch.status === "error") return localResults;
-    if (ragSearch.status !== "done") return [];
+    if (!rag || ragSearch.status !== "done") return localResults;
     const byId = new Map(documents.map(document => [document.id, document]));
-    const seen = new Set<number>();
-    return ragSearch.sources.flatMap(source => {
+    const seen = new Set(localResults.map(document => document.id));
+    const semanticResults = ragSearch.sources.flatMap(source => {
       const document = byId.get(source.documentId);
       if (!document || seen.has(document.id)) return [];
       seen.add(document.id);
       return [{ ...document, presentationSummary: source.excerpt || document.presentationSummary }];
     });
+    return [...localResults, ...semanticResults];
   }, [documents, localResults, rag, ragSearch]);
-  const statusText = ragSearch.status === "loading" ? "Paperless KI-Suche läuft …" : ragSearch.status === "done" ? "Antwort der Paperless KI-Suche" : ragSearch.status === "error" ? "Lokale Ausweichsuche" : rag ? "Paperless KI-Suche bereit" : analyzer ? "KI-Metadaten verbunden" : "Lokale Suche";
-  const statusActive = ragSearch.status !== "error" && (rag || analyzer);
-  const resultSubtitle = rag && ragSearch.status === "done" ? `${results.length} ${results.length === 1 ? "Quelldokument" : "Quelldokumente"} der Paperless KI-Suche` : `${results.length} ${results.length === 1 ? "Treffer" : "Treffer"} in der gesamten Ablage`;
+  const startRagSearch = () => { setRequestedQuery(query.trim()); setRagRequestRevision(value => value + 1); };
+  const statusText = ragSearch.status === "loading" ? "KI-Inhaltssuche läuft im Hintergrund …" : ragSearch.status === "done" ? "KI-Inhaltssuche ergänzt" : ragSearch.status === "error" ? "KI nicht erreichbar · lokale Treffer bleiben sichtbar" : analyzer ? "Sofortsuche in KI-Metadaten" : "Lokale Sofortsuche";
+  const statusActive = ragSearch.status === "loading" || ragSearch.status === "done" || analyzer;
+  const resultSubtitle = `${results.length} ${results.length === 1 ? "Treffer" : "Treffer"} in der gesamten Ablage${ragSearch.status === "done" ? " · durch KI-Inhaltssuche ergänzt" : ""}`;
   return <>
     <SearchBox query={query} setQuery={setQuery}/>
-    <section className="searchResultsIntro"><div><p className="eyebrow">SUCHE IN ALLEN BEREICHEN</p><h1>Treffer für „{query.trim()}“</h1><p>Die Frage wird erst nach Enter oder einem Klick auf „Suchen“ an den vorhandenen Paperless-KI-Suchcontainer übermittelt. Seine Antwort, Quellenreihenfolge und Textausschnitte werden unverändert übernommen.</p></div><span className={statusActive ? "aiSearchStatus active" : "aiSearchStatus"}><Icon name={ragSearch.status === "loading" ? "sync" : statusActive ? "check" : "search"} size={15}/>{statusText}</span></section>
+    <section className="searchResultsIntro"><div><p className="eyebrow">SUCHE IN ALLEN BEREICHEN</p><h1>Treffer für „{query.trim()}“</h1><p>Treffer aus Titel, Paperless-ID, Korrespondent, Dokumenttyp und Analyse erscheinen sofort. Die langsamere KI-Inhaltssuche startest du nur bei Bedarf.</p></div><div className="documentListActions"><span className={statusActive ? "aiSearchStatus active" : "aiSearchStatus"}><Icon name={ragSearch.status === "loading" ? "sync" : statusActive ? "check" : "search"} size={15}/>{statusText}</span>{rag && <button className="quietButton" disabled={ragSearch.status === "loading"} onClick={startRagSearch}><Icon name="search" size={15}/>{ragSearch.status === "done" ? "KI erneut suchen" : "Im Dokumentinhalt suchen"}</button>}</div></section>
     {ragSearch.status === "done" && ragSearch.answer && <section className="ragAnswerCard" aria-live="polite"><span className="ragAnswerIcon"><Icon name="search" size={18}/></span><div><p className="eyebrow">ANTWORT DER PAPERLESS KI-SUCHE</p><p>{ragSearch.answer}</p><small>{ragSearch.sources.length} {ragSearch.sources.length === 1 ? "Quelldokument" : "Quelldokumente"} aus Qdrant und Ollama</small></div></section>}
-    {ragSearch.status === "loading"
-      ? <section className="ragLoadingCard" aria-live="polite"><Icon name="sync" size={20}/><div><strong>Antwort wird erstellt</strong><span>Die Paperless KI-Suche durchsucht deine lokal gespeicherten Dokumente.</span></div></section>
-      : <DocumentList title="Suchergebnisse" subtitle={resultSubtitle} items={results} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={sortDirection} setSortDirection={setSortDirection}/>
-    }
+    {ragSearch.status === "loading" && <section className="ragLoadingCard" aria-live="polite"><Icon name="sync" size={20}/><div><strong>KI-Antwort wird erstellt</strong><span>Die lokalen Treffer darunter können währenddessen bereits geöffnet werden.</span></div></section>}
+    <DocumentList title="Suchergebnisse" subtitle={resultSubtitle} items={results} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={searchSort} setSortDirection={setSearchSort} relevanceAvailable/>
   </>;
 }
 
 function DocumentWorkspace({ document, paperlessUrl, editMode, back, edit, deactivate }: { document: DocumentItem; paperlessUrl: string; editMode: boolean; back: () => void; edit: () => void; deactivate: () => Promise<void> }) {
-  const title = friendlyDocumentTitle(document);
+  const title = displayDocumentTitle(document);
   const contract = contractPresentation(document);
-  const summary = documentSummary(document, 320);
+  const summary = documentSummary(document, 1200);
   const [confirmingDeactivation, setConfirmingDeactivation] = useState(false);
   const [deactivating, setDeactivating] = useState(false);
   const [deactivationError, setDeactivationError] = useState("");
@@ -523,65 +734,79 @@ function DocumentWorkspace({ document, paperlessUrl, editMode, back, edit, deact
   </>;
 }
 
-function SidebarNode({ area, rootId, node, depth, documents, editMode, activeKey, open, drop, rename, addChild, remove }: { area: Area; rootId: string; node: Subarea; depth: number; documents: DocumentItem[]; editMode: boolean; activeKey: string | null; open: (area: Area, rootId: string, uid: string) => void; drop: (ids: number[], destination: DropDestination) => void; rename: (areaId: string, uid: string) => void; addChild: (areaId: string, uid: string) => void; remove: (areaId: string, uid: string) => void }) {
+function SidebarNode({ area, rootId, node, depth, documents, editMode, activeKey, activeYear, open, openYear, drop, rename, addChild, remove }: { area: Area; rootId: string; node: Subarea; depth: number; documents: DocumentItem[]; editMode: boolean; activeKey: string | null; activeYear: string | null; open: (area: Area, rootId: string, uid: string) => void; openYear: (area: Area, uid: string, year: string) => void; drop: (ids: number[], destination: DropDestination) => void; rename: (areaId: string, uid: string) => void; addChild: (areaId: string, uid: string) => void; remove: (areaId: string, uid: string) => void }) {
   const [expanded, setExpanded] = useState(depth < 1);
   const [over, setOver] = useState(false);
   const uid = nodeUid(area.id, node);
-  const childNodes = node.children ?? [];
-  const count = documentsForTreeNode(area.id, rootId, node, documents).length;
+  const childNodes = (node.children ?? []).filter(child => !/^(?:19|20)\d{2}$/.test(child.name));
+  const nodeDocuments = documentsForTreeNode(area.id, rootId, node, documents);
+  const years = childNodes.length || editMode ? [] : [...new Set(nodeDocuments.map(documentYear))].sort((left, right) => left === "Ohne Jahr" ? 1 : right === "Ohne Jahr" ? -1 : right.localeCompare(left, "de"));
+  const count = nodeDocuments.length;
+  const expandable = childNodes.length > 0 || years.length > 0;
   const destination: DropDestination = { areaId: area.id, rootId, tileId: uid, label: `${area.name} → ${node.name}` };
   const receive = (event: DragEvent<HTMLDivElement>) => {
     event.preventDefault(); setOver(false);
     try { const ids = JSON.parse(event.dataTransfer.getData("application/x-personallab-documents")); if (Array.isArray(ids) && ids.length) drop(ids.map(Number), destination); } catch { /* Fremde Drag-Daten ignorieren. */ }
   };
   return <div className="treeNode" style={{ "--tree-depth": depth } as CSSProperties}>
-    <div className={`treeRow ${activeKey === uid ? "active" : ""} ${over ? "dropOver" : ""}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(true); }} onDragLeave={() => setOver(false)} onDrop={receive}>
-      {childNodes.length ? <button className={`treeToggle ${expanded ? "expanded" : ""}`} onClick={() => setExpanded(value => !value)} aria-label={expanded ? "Einklappen" : "Aufklappen"}><Icon name="next" size={13}/></button> : <span className="treeSpacer"/>}
+    <div className={`treeRow ${activeKey === uid && !activeYear ? "active" : ""} ${over ? "dropOver" : ""}`} onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = "move"; setOver(true); }} onDragLeave={() => setOver(false)} onDrop={receive}>
+      {expandable ? <button className={`treeToggle ${expanded ? "expanded" : ""}`} onClick={() => setExpanded(value => !value)} aria-label={expanded ? "Einklappen" : "Aufklappen"}><Icon name="next" size={13}/></button> : <span className="treeSpacer"/>}
       <button className="treeLabel" onClick={() => open(area, rootId, uid)}><span>{node.name}</span><b>{count}</b></button>
       {editMode && <span className="treeActions"><button onClick={() => rename(area.id, uid)} title="Umbenennen"><Icon name="edit" size={13}/></button><button onClick={() => addChild(area.id, uid)} title="Unterpunkt anlegen"><Icon name="plus" size={13}/></button><button onClick={() => remove(area.id, uid)} title="Löschen"><Icon name="trash" size={13}/></button></span>}
     </div>
-    {expanded && childNodes.length > 0 && <div>{childNodes.map(child => <SidebarNode key={nodeUid(area.id, child)} area={area} rootId={rootId} node={child} depth={depth + 1} documents={documents} editMode={editMode} activeKey={activeKey} open={open} drop={drop} rename={rename} addChild={addChild} remove={remove}/>)}</div>}
+    {expanded && childNodes.length > 0 && <div>{childNodes.map(child => <SidebarNode key={nodeUid(area.id, child)} area={area} rootId={rootId} node={child} depth={depth + 1} documents={documents} editMode={editMode} activeKey={activeKey} activeYear={activeYear} open={open} openYear={openYear} drop={drop} rename={rename} addChild={addChild} remove={remove}/>)}</div>}
+    {expanded && years.length > 0 && <div>{years.map(year => {
+      const yearCount = nodeDocuments.filter(document => documentYear(document) === year).length;
+      return <div className="treeNode" style={{ "--tree-depth": depth + 1 } as CSSProperties} key={`${uid}-${year}`}><div className={`treeRow ${activeKey === uid && activeYear === year ? "active" : ""}`}><span className="treeSpacer"/><button className="treeLabel" onClick={() => openYear(area, uid, year)}><span>{year}</span><b>{yearCount}</b></button></div></div>;
+    })}</div>}
   </div>;
 }
 
-function NavigationSidebar({ areas, documents, editMode, activeAreaId, activeNodeKey, toggleEdit, openArea, editArea, addArea, drop, renameNode, addChild, removeNode }: { areas: Area[]; documents: DocumentItem[]; editMode: boolean; activeAreaId: string | null; activeNodeKey: string | null; toggleEdit: () => void; openArea: (area: Area, subareaId?: string) => void; editArea: (area: Area) => void; addArea: () => void; drop: (ids: number[], destination: DropDestination) => void; renameNode: (areaId: string, uid: string) => void; addChild: (areaId: string, uid: string) => void; removeNode: (areaId: string, uid: string) => void }) {
+function NavigationSidebar({ areas, documents, editMode, activeAreaId, activeNodeKey, activeYear, toggleEdit, openArea, editArea, addArea, drop, renameNode, addChild, removeNode }: { areas: Area[]; documents: DocumentItem[]; editMode: boolean; activeAreaId: string | null; activeNodeKey: string | null; activeYear: string | null; toggleEdit: () => void; openArea: (area: Area, subareaId?: string, year?: string) => void; editArea: (area: Area) => void; addArea: () => void; drop: (ids: number[], destination: DropDestination) => void; renameNode: (areaId: string, uid: string) => void; addChild: (areaId: string, uid: string) => void; removeNode: (areaId: string, uid: string) => void }) {
   const [collapsed, setCollapsed] = useState(false);
   const [expandedAreas, setExpandedAreas] = useState<string[]>(["contracts", "review"]);
   return <aside className={`navigationSidebar ${collapsed ? "collapsed" : ""}`}>
     <div className="sidebarHead"><div><p className="eyebrow">ABLAGE</p><strong>Meine Liste</strong></div><button onClick={() => setCollapsed(value => !value)} aria-label={collapsed ? "Liste öffnen" : "Liste schließen"}><Icon name={collapsed ? "next" : "back"} size={16}/></button></div>
-    {!collapsed && <><button className={`sidebarEdit ${editMode ? "active" : ""}`} onClick={toggleEdit}><Icon name={editMode ? "check" : "edit"} size={15}/>{editMode ? "Bearbeiten beenden" : "Liste bearbeiten"}</button><div className="treeHelp"><Icon name="move" size={15}/><span>Dokumente direkt auf ein Ziel ziehen.</span></div><nav className="areaTree">{areas.map(area => <details key={area.id} open={expandedAreas.includes(area.id)} onToggle={event => { const opened = event.currentTarget.open; setExpandedAreas(current => opened ? [...new Set([...current, area.id])] : current.filter(id => id !== area.id)); }}><summary><button className={`areaTreeOpen ${activeAreaId === area.id && !activeNodeKey ? "active" : ""}`} onClick={event => { event.preventDefault(); setExpandedAreas(current => [...new Set([...current, area.id])]); openArea(area); }}><span className={`treeAreaIcon tone-${area.tone}`}><Icon name={area.icon} size={15}/></span><span>{area.name}</span><b>{area.count}</b></button>{editMode && <button className="treeAreaEdit" onClick={event => { event.preventDefault(); editArea(area); }} title="Bereich bearbeiten"><Icon name="edit" size={13}/></button>}</summary><div className="treeChildren">{area.subareas.map(node => <SidebarNode key={nodeUid(area.id, node)} area={area} rootId={node.id} node={node} depth={0} documents={documents} editMode={editMode} activeKey={activeAreaId === area.id ? activeNodeKey : null} open={(target, _rootId, uid) => openArea(target, uid)} drop={drop} rename={renameNode} addChild={addChild} remove={removeNode}/>)}</div></details>)}</nav>{editMode && <button className="sidebarAdd" onClick={addArea}><Icon name="plus" size={15}/>Neuen Bereich anlegen</button>}</>}
+    {!collapsed && <><button className={`sidebarEdit ${editMode ? "active" : ""}`} onClick={toggleEdit}><Icon name={editMode ? "check" : "edit"} size={15}/>{editMode ? "Bearbeiten beenden" : "Liste bearbeiten"}</button><div className="treeHelp"><Icon name="move" size={15}/><span>Dokumente direkt auf ein Ziel ziehen.</span></div><nav className="areaTree">{areas.map(area => <details key={area.id} open={expandedAreas.includes(area.id)} onToggle={event => { const opened = event.currentTarget.open; setExpandedAreas(current => opened ? [...new Set([...current, area.id])] : current.filter(id => id !== area.id)); }}><summary><button className={`areaTreeOpen ${activeAreaId === area.id && !activeNodeKey ? "active" : ""}`} onClick={event => { event.preventDefault(); setExpandedAreas(current => [...new Set([...current, area.id])]); openArea(area); }}><span className={`treeAreaIcon tone-${area.tone}`}><Icon name={area.icon} size={15}/></span><span>{area.name}</span><b>{area.count}</b></button>{editMode && <button className="treeAreaEdit" onClick={event => { event.preventDefault(); editArea(area); }} title="Bereich bearbeiten"><Icon name="edit" size={13}/></button>}</summary><div className="treeChildren">{area.subareas.map(node => <SidebarNode key={nodeUid(area.id, node)} area={area} rootId={node.id} node={node} depth={0} documents={documents} editMode={editMode} activeKey={activeAreaId === area.id ? activeNodeKey : null} activeYear={activeAreaId === area.id ? activeYear : null} open={(target, _rootId, uid) => openArea(target, uid)} openYear={(target, uid, year) => openArea(target, uid, year)} drop={drop} rename={renameNode} addChild={addChild} remove={removeNode}/>)}</div></details>)}</nav>{editMode && <button className="sidebarAdd" onClick={addArea}><Icon name="plus" size={15}/>Neuen Bereich anlegen</button>}</>}
   </aside>;
 }
 
-function Overview({ documents, openDocuments, paperlessUrl, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; openDocuments: (scope: DocumentScope) => void; paperlessUrl: string; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void }) {
+function Overview({ documents, openDocuments, paperlessUrl, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; openDocuments: (scope: DocumentScope) => void; paperlessUrl: string; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortMode; setSortDirection: (direction: DocumentSortMode) => void }) {
   const [syncing, setSyncing] = useState(false);
+  const [syncError, setSyncError] = useState("");
   const recent = documents.filter(doc => documentSearchText(doc).includes(query.toLowerCase())).slice(0, 8);
   const unassigned = documents.filter(doc => !doc.area || !doc.subarea).length;
   const newDocuments = documents.filter(doc => doc.isNew).length;
   const syncNow = async () => {
     setSyncing(true);
+    setSyncError("");
     try {
-      await fetch("/api/sync", { method: "POST" });
-      for (let attempt = 0; attempt < 30; attempt += 1) {
+      const started = await fetch("/api/sync", { method: "POST" });
+      if (!started.ok) throw new Error("Abgleich konnte nicht gestartet werden.");
+      for (let attempt = 0; attempt < 300; attempt += 1) {
         await new Promise(resolve => window.setTimeout(resolve, 1000));
         const response = await fetch("/api/state", { cache: "no-store" });
-        if (!response.ok) break;
+        if (!response.ok) throw new Error("Status des Abgleichs nicht erreichbar.");
         const payload = await response.json();
+        if (payload.syncStatus === "failed") throw new Error(payload.syncError || "Abgleich fehlgeschlagen.");
         if (payload.syncStatus !== "running") { window.location.reload(); return; }
       }
-    } finally { setSyncing(false); }
+      setSyncError("Der Abgleich läuft noch auf dem Server. Bitte später die Seite neu laden.");
+    } catch (error) { setSyncError(error instanceof Error ? error.message : "Abgleich fehlgeschlagen."); }
+    finally { setSyncing(false); }
   };
   return <>
     {editMode && <div className="editNotice"><span><Icon name="edit" size={18}/></span><div><strong>Bearbeitungsmodus aktiv</strong><p>Die Ablagestruktur wird links bearbeitet. Dokumente lassen sich unten gesammelt auswählen und neu zuordnen.</p></div></div>}
     <SearchBox query={query} setQuery={setQuery}/>
     <section className="intro compactOverviewIntro"><div><p className="eyebrow">DOKUMENTARBEITSPLATZ</p><h1>Links auswählen, rechts lesen.</h1><p>Die Ablageliste ist jetzt die Navigation. Ein Dokument öffnet sich direkt hier als PDF.</p></div><div className="introActions"><button className="quietButton" disabled={!paperlessUrl} onClick={() => paperlessUrl && window.open(`${paperlessUrl}/documents`, "_blank", "noopener,noreferrer")}><Icon name="open" size={17}/>Paperless öffnen</button><button className="primaryButton" disabled={syncing} onClick={syncNow}><Icon name="sync" size={17}/>{syncing ? "Abgleich läuft …" : "Jetzt abgleichen"}</button></div></section>
+    {syncError && <p className="errorText" role="alert">{syncError}</p>}
     <div className="overviewQuickbar"><button onClick={() => openDocuments("all")}><Icon name="file" size={17}/><strong>{documents.length.toLocaleString("de-DE")}</strong><span>Alle Dokumente</span></button><button onClick={() => openDocuments("unassigned")}><Icon name="inbox" size={17}/><strong>{unassigned}</strong><span>Nicht zugeordnet</span></button><button onClick={() => openDocuments("new")}><Icon name="clock" size={17}/><strong>{newDocuments}</strong><span>Neu seit Abgleich</span></button></div>
     <section className="workspaceWelcome"><span><Icon name="file" size={28}/></span><div><p className="eyebrow">SO FUNKTIONIERT ES</p><h2>Ablagepunkt in „Meine Liste“ wählen</h2><p>Rechts erscheinen sofort die zugehörigen Dokumente. Ein Klick auf ein Dokument öffnet die PDF-Vorschau an dieser Stelle.</p></div></section>
     <DocumentList title="Zuletzt hinzugefügt" subtitle="Dokument anklicken, um es als PDF zu öffnen" items={recent} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={sortDirection} setSortDirection={setSortDirection}/>
   </>;
 }
 
-type AreaViewProps = { area: Area; documents: DocumentItem[]; config: AppConfig; pageLayouts: PageLayouts; setPageLayouts: (layouts: PageLayouts) => void; financeAccountAssignments: FinanceAccountAssignments; updateFinanceAccountAssignment: (key: string, ids: string[] | undefined) => void; financeDataSelections: FinanceDataSelections; updateFinanceDataSelection: (key: string, ids: string[] | undefined) => void; energyProviderAssignments: EnergyProviderAssignments; updateEnergyProviderAssignment: (key: string, providers: string[] | undefined) => void; energyMetricSelections: EnergyMetricSelections; updateEnergyMetricSelection: (key: string, ids: string[] | undefined) => void; selectedSubarea: string | null; chooseSubarea: (id: string | null) => void; goBack: () => void; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; editSubarea: (id: string) => void; addSubarea: () => void; addGroup: (subareaId: string | null, name: string) => void; renameParty: (oldName: string, newName: string, fallback: string) => void; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void };
+type AreaViewProps = { area: Area; documents: DocumentItem[]; config: AppConfig; pageLayouts: PageLayouts; setPageLayouts: (layouts: PageLayouts) => void; financeAccountAssignments: FinanceAccountAssignments; updateFinanceAccountAssignment: (key: string, ids: string[] | undefined) => void; financeDataSelections: FinanceDataSelections; updateFinanceDataSelection: (key: string, ids: string[] | undefined) => void; energyProviderAssignments: EnergyProviderAssignments; updateEnergyProviderAssignment: (key: string, providers: string[] | undefined) => void; energyMetricSelections: EnergyMetricSelections; updateEnergyMetricSelection: (key: string, ids: string[] | undefined) => void; selectedSubarea: string | null; chooseSubarea: (id: string | null) => void; yearSelection: YearSelection; setYearSelection: (selection: YearSelection) => void; goBack: () => void; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; editSubarea: (id: string) => void; addSubarea: () => void; addGroup: (subareaId: string | null, name: string) => void; renameParty: (oldName: string, newName: string, fallback: string) => void; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortMode; setSortDirection: (direction: DocumentSortMode) => void };
 
 const energyDetailLevels = [
   { id: "contracts", name: "Verträge", hint: "Verträge und Tarifunterlagen", pattern: /vertrag|tarif|liefer/ },
@@ -604,11 +829,10 @@ const energyDetailId = (node?: Subarea): EnergyDetailId | null => {
   return null;
 };
 
-function SidebarAreaView({ area, documents, config, financeAccountAssignments, updateFinanceAccountAssignment, financeDataSelections, updateFinanceDataSelection, energyProviderAssignments, updateEnergyProviderAssignment, energyMetricSelections, updateEnergyMetricSelection, selectedSubarea, chooseSubarea, goBack, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: AreaViewProps) {
-  const [yearState, setYearState] = useState<{ key: string; value: string } | null>(null);
+function SidebarAreaView({ area, documents, config, financeAccountAssignments, updateFinanceAccountAssignment, financeDataSelections, updateFinanceDataSelection, energyProviderAssignments, updateEnergyProviderAssignment, energyMetricSelections, updateEnergyMetricSelection, selectedSubarea, chooseSubarea, yearSelection, setYearSelection, goBack, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: AreaViewProps) {
   const active = findTreeSelection(area, selectedSubarea);
   const activeKey = active ? nodeUid(area.id, active.node) : area.id;
-  const year = yearState?.key === activeKey ? yearState.value : "";
+  const year = yearSelection?.key === activeKey ? yearSelection.value : "";
   const scopedDocuments = active ? documentsForTreeNode(area.id, active.root.id, active.node, documents) : documents.filter(doc => doc.area === area.id);
   const visibleDocuments = scopedDocuments.filter(doc => !year || documentYear(doc) === year).filter(doc => documentSearchText(doc).includes(query.toLowerCase()));
   const financeProviderNode = area.id === "finance" && active?.root.id === "accounts" && active.path.length > 1 ? active.path[1] : null;
@@ -627,10 +851,10 @@ function SidebarAreaView({ area, documents, config, financeAccountAssignments, u
   const title = active?.node.name ?? `Alle Dokumente in ${area.name}`;
   return <>
     {editMode && <div className="editNotice"><span><Icon name="edit" size={18}/></span><div><strong>Seitenleiste bearbeiten</strong><p>Namen, Reihenfolge und Unterpunkte werden links verwaltet. Rechts bleibt Platz für Dokumente und Vorschauen.</p></div></div>}
-    <div className="breadcrumbs"><button onClick={goBack}><Icon name="back" size={16}/>Übersicht</button><span>/</span><button onClick={() => { setYearState(null); chooseSubarea(null); }}>{area.name}</button>{active?.path.map((node, index) => <span key={nodeUid(area.id, node)} className="breadcrumbPart"><span>/</span>{index === active.path.length - 1 ? <strong>{node.name}</strong> : <button onClick={() => { setYearState(null); chooseSubarea(nodeUid(area.id, node)); }}>{node.name}</button>}</span>)}</div>
+    <div className="breadcrumbs"><button onClick={goBack}><Icon name="back" size={16}/>Übersicht</button><span>/</span><button onClick={() => { setYearSelection(null); chooseSubarea(null); }}>{area.name}</button>{active?.path.map((node, index) => <span key={nodeUid(area.id, node)} className="breadcrumbPart"><span>/</span>{index === active.path.length - 1 && !year ? <strong>{node.name}</strong> : <button onClick={() => { setYearSelection(null); chooseSubarea(nodeUid(area.id, node)); }}>{node.name}</button>}</span>)}{year && <><span>/</span><strong>{year}</strong></>}</div>
     <SearchBox query={query} setQuery={setQuery}/>
     <section className="areaIntro compactAreaIntro"><span className={`largeAreaIcon tone-${area.tone}`}><Icon name={area.icon} size={29}/></span><div><p className="eyebrow">{active ? "ABLAGEPUNKT" : "AKTENBEREICH"}</p><h1>{active?.node.name ?? area.name}</h1><p>{active ? active.node.hint || "Dokumente dieses Ablagepunkts" : "Wähle links einen Ablagepunkt oder öffne unten ein Dokument."}</p></div><span className="areaTotal"><strong>{visibleDocuments.length.toLocaleString("de-DE")}</strong><small>Dokumente</small></span></section>
-    <div className="documentToolbar"><div><strong>{title}</strong><span>{query ? `${visibleDocuments.length} Treffer` : `${scopedDocuments.length} Dokumente`}</span></div><CompactYearFilter documents={scopedDocuments} value={year} change={value => setYearState({ key: activeKey, value })}/></div>
+    <div className="documentToolbar"><div><strong>{year ? `${title} · ${year}` : title}</strong><span>{query || year ? `${visibleDocuments.length} Treffer` : `${scopedDocuments.length} Dokumente`}</span></div><CompactYearFilter documents={scopedDocuments} value={year} change={value => setYearSelection(value ? { key: activeKey, value } : null)}/></div>
     {finance}
     {energy}
     <DocumentList title={year ? `${title} · ${year}` : title} subtitle={year ? `${visibleDocuments.length} Dokumente in diesem Jahr` : "Dokument anklicken, um die PDF-Vorschau zu öffnen"} items={visibleDocuments} onOpen={openDocument} editMode={editMode} selected={selected} setSelected={setSelected} assign={assign} dragDocument={dragDocument} sortDirection={sortDirection} setSortDirection={setSortDirection}/>
@@ -642,7 +866,7 @@ function WorkAreaView({ area, documents, selectedSubarea, chooseSubarea, goBack,
   const active = findTreeSelection(area, selectedSubarea);
   const activeKey = active ? nodeUid(area.id, active.node) : "";
   const year = yearState?.key === activeKey ? yearState.value : null;
-  const activeDocuments = active ? documentsForTreeNode(area.id, active.root.id, active.node, documents) : documents.filter(doc => doc.area === area.id);
+  const activeDocuments = active ? documentsForTreeNode(area.id, active.root.id, active.node, documents) : documents.filter(doc => documentInArea(doc, area.id));
   const visibleDocuments = activeDocuments.filter(doc => !year || documentYear(doc) === year).filter(doc => documentSearchText(doc).includes(query.toLowerCase()));
   const choices = active ? active.node.children ?? [] : area.subareas;
   const chooseNode = (node: Subarea) => { setYearState(null); chooseSubarea(nodeUid(area.id, node)); };
@@ -674,7 +898,7 @@ function PartyAreaView(props: AreaViewProps) {
   const [detail, setDetail] = useState<string | null>(null);
   const [year, setYear] = useState<string | null>(null);
   const [energyProviderState, setEnergyProviderState] = useState<{ key: string; items: string[] }>({ key: "", items: [] });
-  const areaDocuments = documents.filter(doc => doc.area === area.id);
+  const areaDocuments = documents.filter(doc => documentInArea(doc, area.id));
   const segmentDocuments = areaDocuments.filter(doc => !selectedSubarea || doc.subarea === selectedSubarea);
   const partyFallback = area.id === "work" ? "Ohne Arbeitgeber" : "Ohne Anbieter";
   const energyProviderKey = area.id === "energy" && selectedSubarea && config.energyLab ? selectedSubarea : "";
@@ -724,7 +948,7 @@ function GroupedAreaView(props: AreaViewProps) {
   const [group, setGroup] = useState<string | null>(null);
   const [year, setYear] = useState<string | null>(null);
   const active = area.subareas.find(item => item.id === selectedSubarea);
-  const scoped = documents.filter(doc => doc.area === area.id && doc.subarea === selectedSubarea);
+  const scoped = documents.filter(doc => documentInArea(doc, area.id) && doc.subarea === selectedSubarea);
   const fallback = "Ohne Untergruppe";
   const groups = [...new Set([...(active?.groups ?? []), ...scoped.map(doc => groupName(doc, fallback))])].filter(Boolean).sort((a, b) => a.localeCompare(b, "de"));
   const groupDocuments = scoped.filter(doc => !group || groupName(doc, fallback) === group);
@@ -750,7 +974,7 @@ function AreaView(props: AreaViewProps) {
 function LegacyAreaView({ area, documents, config, pageLayouts, setPageLayouts, selectedSubarea, chooseSubarea, goBack, query, setQuery, openDocument, editMode, editSubarea, addSubarea, selected, setSelected, assign, dragDocument }: AreaViewProps) {
   const [year, setYear] = useState<string | null>(null);
   const active = area.subareas.find(item => item.id === selectedSubarea);
-  const scopedItems = documents.filter(doc => doc.area === area.id && (!selectedSubarea || doc.subarea === selectedSubarea));
+  const scopedItems = documents.filter(doc => documentInArea(doc, area.id) && (!selectedSubarea || doc.subarea === selectedSubarea));
   const items = scopedItems.filter(doc => !year || documentYear(doc) === year).filter(doc => documentSearchText(doc).includes(query.toLowerCase()));
   const navigationBlock = <section><div className="sectionTitle"><div><p className="eyebrow">UNTERBEREICHE</p><h2>{editMode ? "Kacheln bearbeiten" : "Was möchtest du öffnen?"}</h2></div>{active && !editMode && <button className="quietButton" onClick={() => { setYear(null); chooseSubarea(null); }}>Auswahl aufheben</button>}</div><div className="subareaGrid">{!editMode && <button className={`subareaTile ${selectedSubarea === null ? "selected" : ""}`} onClick={() => { setYear(null); chooseSubarea(null); }}><span className="subareaSymbol"><Icon name="grid" size={21}/></span><strong>Alles in {area.name}</strong><small>Gesamten Bereich anzeigen</small><b>{area.count}</b></button>}{area.subareas.map(subarea => <button key={subarea.id} className={`subareaTile ${selectedSubarea === subarea.id ? "selected" : ""} ${editMode ? "editable" : ""}`} onClick={() => { setYear(null); if (editMode) editSubarea(subarea.id); else chooseSubarea(subarea.id); }}>{editMode && <span className="editFlag"><Icon name="edit" size={13}/>Ändern</span>}<span className="subareaSymbol"><Icon name={area.id === "energy" ? "energy" : "file"} size={21}/></span><strong>{subarea.name}</strong><small>{subarea.hint}</small><b>{subarea.count}</b><Icon name={editMode ? "move" : "next"} size={17}/></button>)}{editMode && <button className="addTile" onClick={addSubarea}><span><Icon name="plus" size={24}/></span><strong>Neue Kachel</strong><small>Unterbereich anlegen</small></button>}</div></section>;
   const integrationBlock = area.id === "energy" ? <EnergyIntegration key={selectedSubarea ?? "all-energy"} segmentId={selectedSubarea} configured={config.energyLab}/> : area.id === "finance" && selectedSubarea === "accounts" ? <FinanceIntegration configured={config.financeLab}/> : null;
@@ -766,7 +990,7 @@ function LegacyAreaView({ area, documents, config, pageLayouts, setPageLayouts, 
   </>;
 }
 
-function DocumentsView({ documents, scope, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; scope: DocumentScope; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortDirection; setSortDirection: (direction: DocumentSortDirection) => void }) {
+function DocumentsView({ documents, scope, query, setQuery, openDocument, editMode, selected, setSelected, assign, dragDocument, sortDirection, setSortDirection }: { documents: DocumentItem[]; scope: DocumentScope; query: string; setQuery: (value: string) => void; openDocument: (doc: DocumentItem) => void; editMode: boolean; selected: number[]; setSelected: (ids: number[]) => void; assign: () => void; dragDocument: (event: DragEvent<HTMLButtonElement>, doc: DocumentItem) => void; sortDirection: DocumentSortMode; setSortDirection: (direction: DocumentSortMode) => void }) {
   const [filters, setFilters] = useState<string[]>(["Alle"]);
   const filtered = useMemo(() => documents.filter(doc => {
     const text = documentSearchText(doc);
@@ -882,10 +1106,50 @@ function Drawer({ document, areas, correspondents, paperlessUrl, editMode, close
   const assignment = hierarchyChoice(area, draft.tileId, draft.subarea);
   const active = assignment?.path[0];
   const availableGroups = [...new Set([...(area?.groups ?? []), ...((assignment?.path ?? []).flatMap(node => node.groups ?? [])), ...correspondents])].sort((a, b) => a.localeCompare(b, "de"));
+  const [crosslinkAreaId, setCrosslinkAreaId] = useState(areas[0]?.id ?? "");
+  const [crosslinkChoice, setCrosslinkChoice] = useState<HierarchyChoice | null>(null);
+  const crosslinkArea = areas.find(item => item.id === crosslinkAreaId);
+  const crosslinkTargets = areas.flatMap(targetArea => {
+    const collect = (nodes: Subarea[], path: string[] = []): Array<{ uid: string; label: string }> => nodes.flatMap(node => {
+      const nextPath = [...path, node.name];
+      const uid = nodeUid(targetArea.id, node);
+      return [{ uid, label: `${targetArea.name} → ${nextPath.join(" → ")}` }, ...collect(node.children ?? [], nextPath)];
+    });
+    return [{ uid: `area:${targetArea.id}`, label: targetArea.name }, ...collect(targetArea.subareas)];
+  });
+  const crosslinkLabelMap = new Map(crosslinkTargets.map(target => [target.uid, target.label]));
+  const secondaryTileLabels = secondaryTiles(draft)
+    .map(uid => ({ uid, label: crosslinkLabelMap.get(uid) ?? uid }))
+    .filter(target => target.uid !== draft.tileId && target.uid !== `area:${draft.area}`);
+  const crosslinkTargetUid = crosslinkChoice?.tileId ?? (crosslinkArea ? `area:${crosslinkArea.id}` : "");
+  const crosslinkCanAdd = Boolean(crosslinkTargetUid)
+    && !secondaryTiles(draft).includes(crosslinkTargetUid)
+    && crosslinkTargetUid !== draft.tileId
+    && crosslinkTargetUid !== `area:${draft.area}`;
+  const changeCrosslinkArea = (nextAreaId: string) => {
+    setCrosslinkAreaId(nextAreaId);
+    setCrosslinkChoice(null);
+  };
+  const addSecondaryTile = (uid: string) => {
+    if (!uid) return;
+    setDraft(current => ({
+      ...current,
+      secondaryTileIds: [...new Set([...secondaryTiles(current), uid])]
+        .filter(target => target !== current.tileId && target !== `area:${current.area}`),
+      assignmentSource: "manual",
+    }));
+    setCrosslinkChoice(null);
+  };
+  const removeSecondaryTile = (uid: string) => setDraft(current => ({
+    ...current,
+    secondaryTileIds: secondaryTiles(current).filter(target => target !== uid),
+    assignmentSource: "manual",
+  }));
+
   const changeArea = (nextArea: string) => setDraft(current => ({ ...current, area: nextArea, subarea: "", tileId: "", group: "", assignmentSource: "manual" }));
   const changeHierarchy = (choice: HierarchyChoice | null) => setDraft(current => ({ ...current, subarea: choice?.rootId ?? "", tileId: choice?.tileId ?? "", group: "", assignmentSource: "manual" }));
   const save = () => { const correspondent = draft.correspondent.trim(); const group = draft.group?.trim() ?? ""; if (correspondent) addCorrespondent(correspondent); if (group && area) addGroup(area.id, assignment?.rootId ?? null, group); update({ ...draft, correspondent, group, assignmentSource: "manual", metadataSource: "manual" }); setEditing(false); };
-  return <div className="drawerBackdrop" onMouseDown={event => { if (event.currentTarget === event.target) close(); }}><aside className={`drawer ${largePreview ? "previewing" : ""} ${contract ? `contract-${contract.status}` : ""}`}><div className="drawerTop"><span className="docIcon"><Icon name="file"/></span><div className="drawerTopActions">{!editing && <button onClick={() => setEditing(true)} aria-label="Dokument bearbeiten"><Icon name="edit"/></button>}<button onClick={close} aria-label="Schließen"><Icon name="close"/></button></div></div><p className="eyebrow">PAPERLESS #{document.id}</p>{editing ? <div className="drawerForm"><label>Titel<input value={draft.title} onChange={event => setDraft({...draft, title: event.target.value})}/></label><label>Korrespondent<input list="personallab-correspondents" value={draft.correspondent} onChange={event => setDraft({...draft, correspondent: event.target.value})} placeholder="Auswählen oder neu eingeben"/><datalist id="personallab-correspondents">{correspondents.map(name => <option key={name} value={name}/>)}</datalist><small>Vorhandenen Korrespondenten auswählen oder einen neuen Namen eingeben.</small></label><label>Dokumenttyp<input value={draft.type} onChange={event => setDraft({...draft, type: event.target.value})}/></label>{isContract(draft) && <fieldset className="contractFields"><legend>Vertragsdaten</legend><div><label>Vertragsnummer<input value={draft.contractNumber ?? ""} onChange={event => setDraft({...draft, contractNumber: event.target.value})}/></label><label>Vertragsbeginn<input type="date" value={isoDate(draft.contractStart)} onChange={event => setDraft({...draft, contractStart: event.target.value})}/></label><label>Vertragsende<input type="date" value={isoDate(draft.contractEnd)} onChange={event => setDraft({...draft, contractEnd: event.target.value})}/></label><label>Kündigungsfrist bis<input type="date" value={isoDate(draft.cancellationDeadline)} onChange={event => setDraft({...draft, cancellationDeadline: event.target.value})}/></label></div><label className="contractCheck"><input type="checkbox" checked={Boolean(draft.autoRenew)} onChange={event => setDraft({...draft, autoRenew: event.target.checked})}/>Automatische Verlängerung</label><label>Status<select value={draft.contractStatusManual ? draft.contractStatus ?? "unknown" : "automatic"} onChange={event => setDraft({...draft, contractStatusManual: event.target.value !== "automatic", contractStatus: event.target.value === "automatic" ? undefined : event.target.value as DocumentItem["contractStatus"]})}><option value="automatic">Automatisch aus Laufzeit</option><option value="active">Aktiv</option><option value="inactive">Inaktiv</option><option value="unknown">Status prüfen</option></select></label></fieldset>}</div> : <><h2>{draft.title}</h2><p className="drawerLead">{draft.correspondent} · {draft.type}</p>{contract && <span className={`contractBadge large ${contract.status}`}>{contract.label}</span>}</>}{paperlessUrl && <section className={`documentPreview ${largePreview ? "large" : ""}`}><button type="button" onClick={() => setLargePreview(value => !value)}>{largePreview ? <iframe title={`Vorschau ${draft.title}`} src={`/api/documents/${document.id}/preview`}/> : <img src={`/api/documents/${document.id}/thumbnail`} alt={`Miniaturansicht von ${draft.title}`}/>}<span><Icon name={largePreview ? "close" : "open"} size={16}/>{largePreview ? "Vorschau schließen" : "Große Vorschau öffnen"}</span></button></section>}<dl><div><dt>Dokumentdatum</dt><dd>{draft.date}</dd></div><div><dt>Bereich</dt><dd>{area?.name ?? "Nicht zugeordnet"}</dd></div>{(assignment?.path ?? []).map((node, index) => <div key={nodeUid(area!.id, node)}><dt>Ebene {index + 2}</dt><dd>{node.name}</dd></div>)}<div><dt>Zusatzgruppe</dt><dd>{draft.group || "–"}</dd></div>{contract && <><div><dt>Vertragsende</dt><dd>{draft.contractEnd || "Nicht hinterlegt"}</dd></div><div><dt>Status</dt><dd>{contract.label}</dd></div></>}</dl><section className="assignment"><p className="eyebrow">ZUORDNUNG</p>{editing ? <div className="drawerForm assignmentFields"><label>Ebene 1 · Bereich<select value={draft.area} onChange={event => changeArea(event.target.value)}><option value="">Nicht zugeordnet</option>{areas.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><HierarchySelectors area={area} value={assignment} change={changeHierarchy} prefix={`drawer-${document.id}-`}/><label>Zusatzgruppe · optional<input list="personallab-groups" value={draft.group ?? ""} onChange={event => setDraft({...draft, group: event.target.value, assignmentSource: "manual"})} placeholder="z. B. Sparkasse oder ING"/><datalist id="personallab-groups">{availableGroups.map(name => <option key={name} value={name}/>)}</datalist><small>Auswählen oder eine neue Untergruppe eingeben.</small></label></div> : <div className="filterPills"><button className={area ? "active" : ""}><span>{area && <Icon name="check" size={14}/>}</span>{area?.name ?? "Nicht zugeordnet"}</button>{(assignment?.path ?? []).map(node => <button className="active" key={nodeUid(area!.id, node)}><span><Icon name="check" size={14}/></span>{node.name}</button>)}{draft.group && <button className="active"><span><Icon name="check" size={14}/></span>{draft.group}</button>}</div>}</section>{editing ? <div className="drawerActions"><button className="quietButton" onClick={() => { setDraft(document); setEditing(false); }}>Abbrechen</button><button className="primaryButton" onClick={save}><Icon name="check" size={17}/>Änderungen speichern</button></div> : <button className="primaryButton full" disabled={!paperlessUrl} onClick={() => paperlessUrl && window.open(`${paperlessUrl}/documents/${document.id}/details`, "_blank", "noopener,noreferrer")}><Icon name="open" size={17}/>In Paperless öffnen</button>}</aside></div>;
+  return <div className="drawerBackdrop" onMouseDown={event => { if (event.currentTarget === event.target) close(); }}><aside className={`drawer ${largePreview ? "previewing" : ""} ${contract ? `contract-${contract.status}` : ""}`}><div className="drawerTop"><span className="docIcon"><Icon name="file"/></span><div className="drawerTopActions">{!editing && <button onClick={() => setEditing(true)} aria-label="Dokument bearbeiten"><Icon name="edit"/></button>}<button onClick={close} aria-label="Schließen"><Icon name="close"/></button></div></div><p className="eyebrow">PAPERLESS #{document.id}</p>{editing ? <div className="drawerForm"><label>Titel<input value={draft.title} onChange={event => setDraft({...draft, title: event.target.value})}/></label><label>Korrespondent<input list="personallab-correspondents" value={draft.correspondent} onChange={event => setDraft({...draft, correspondent: event.target.value})} placeholder="Auswählen oder neu eingeben"/><datalist id="personallab-correspondents">{correspondents.map(name => <option key={name} value={name}/>)}</datalist><small>Vorhandenen Korrespondenten auswählen oder einen neuen Namen eingeben.</small></label><label>Dokumenttyp<input value={draft.type} onChange={event => setDraft({...draft, type: event.target.value})}/></label>{isContract(draft) && <fieldset className="contractFields"><legend>Vertragsdaten</legend><div><label>Vertragsnummer<input value={draft.contractNumber ?? ""} onChange={event => setDraft({...draft, contractNumber: event.target.value})}/></label><label>Vertragsbeginn<input type="date" value={isoDate(draft.contractStart)} onChange={event => setDraft({...draft, contractStart: event.target.value})}/></label><label>Vertragsende<input type="date" value={isoDate(draft.contractEnd)} onChange={event => setDraft({...draft, contractEnd: event.target.value})}/></label><label>Kündigungsfrist bis<input type="date" value={isoDate(draft.cancellationDeadline)} onChange={event => setDraft({...draft, cancellationDeadline: event.target.value})}/></label></div><label className="contractCheck"><input type="checkbox" checked={Boolean(draft.autoRenew)} onChange={event => setDraft({...draft, autoRenew: event.target.checked})}/>Automatische Verlängerung</label><label>Status<select value={draft.contractStatusManual ? draft.contractStatus ?? "unknown" : "automatic"} onChange={event => setDraft({...draft, contractStatusManual: event.target.value !== "automatic", contractStatus: event.target.value === "automatic" ? undefined : event.target.value as DocumentItem["contractStatus"]})}><option value="automatic">Automatisch aus Laufzeit</option><option value="active">Aktiv</option><option value="inactive">Inaktiv</option><option value="unknown">Status prüfen</option></select></label></fieldset>}</div> : <><h2>{draft.title}</h2><p className="drawerLead">{draft.correspondent} · {draft.type}</p>{contract && <span className={`contractBadge large ${contract.status}`}>{contract.label}</span>}</>}{paperlessUrl && <section className={`documentPreview ${largePreview ? "large" : ""}`}><button type="button" onClick={() => setLargePreview(value => !value)}>{largePreview ? <iframe title={`Vorschau ${draft.title}`} src={`/api/documents/${document.id}/preview`}/> : <img src={`/api/documents/${document.id}/thumbnail`} alt={`Miniaturansicht von ${draft.title}`}/>}<span><Icon name={largePreview ? "close" : "open"} size={16}/>{largePreview ? "Vorschau schließen" : "Große Vorschau öffnen"}</span></button></section>}<dl><div><dt>Dokumentdatum</dt><dd>{draft.date}</dd></div><div><dt>Bereich</dt><dd>{area?.name ?? "Nicht zugeordnet"}</dd></div>{(assignment?.path ?? []).map((node, index) => <div key={nodeUid(area!.id, node)}><dt>Ebene {index + 2}</dt><dd>{node.name}</dd></div>)}<div><dt>Zusatzgruppe</dt><dd>{draft.group || "–"}</dd></div>{contract && <><div><dt>Vertragsende</dt><dd>{draft.contractEnd || "Nicht hinterlegt"}</dd></div><div><dt>Status</dt><dd>{contract.label}</dd></div></>}</dl><section className="assignment"><p className="eyebrow">ZUORDNUNG</p>{editing ? <div className="drawerForm assignmentFields"><label>Ebene 1 · Bereich<select value={draft.area} onChange={event => changeArea(event.target.value)}><option value="">Nicht zugeordnet</option>{areas.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><HierarchySelectors area={area} value={assignment} change={changeHierarchy} prefix={`drawer-${document.id}-`}/><label>Zusatzgruppe · optional<input list="personallab-groups" value={draft.group ?? ""} onChange={event => setDraft({...draft, group: event.target.value, assignmentSource: "manual"})} placeholder="z. B. Sparkasse oder ING"/><datalist id="personallab-groups">{availableGroups.map(name => <option key={name} value={name}/>)}</datalist><small>Auswählen oder eine neue Untergruppe eingeben.</small></label><section className="assignment crosslinkAssignment"><p className="eyebrow">QUERVERWEISE</p><label>Ebene 1 · Bereich<select value={crosslinkAreaId} onChange={event => changeCrosslinkArea(event.target.value)}><option value="">Bitte wählen</option>{areas.map(item => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><HierarchySelectors area={crosslinkArea} value={crosslinkChoice} change={setCrosslinkChoice} prefix={`crosslink-${document.id}-`}/><button type="button" className="quietButton" disabled={!crosslinkCanAdd} onClick={() => addSecondaryTile(crosslinkTargetUid)}>Querverweis hinzufügen</button>{secondaryTileLabels.length ? <div className="filterPills">{secondaryTileLabels.map(target => <button type="button" className="active" key={target.uid} onClick={() => removeSecondaryTile(target.uid)} title="Querverweis entfernen"><span><Icon name="close" size={14}/></span>{target.label}</button>)}</div> : <small>Noch keine zusätzlichen Ablageorte.</small>}</section></div> : <div className="filterPills"><button className={area ? "active" : ""}><span>{area && <Icon name="check" size={14}/>}</span>{area?.name ?? "Nicht zugeordnet"}</button>{(assignment?.path ?? []).map(node => <button className="active" key={nodeUid(area!.id, node)}><span><Icon name="check" size={14}/></span>{node.name}</button>)}{draft.group && <button className="active"><span><Icon name="check" size={14}/></span>{draft.group}</button>}</div>}</section>{!editing && secondaryTileLabels.length > 0 && <section className="assignment crosslinkAssignment"><p className="eyebrow">QUERVERWEISE</p><div className="filterPills">{secondaryTileLabels.map(target => <button className="active" key={target.uid}><span><Icon name="check" size={14}/></span>{target.label}</button>)}</div></section>}{editing ? <div className="drawerActions"><button className="quietButton" onClick={() => { setDraft(document); setEditing(false); }}>Abbrechen</button><button className="primaryButton" onClick={save}><Icon name="check" size={17}/>Änderungen speichern</button></div> : <button className="primaryButton full" disabled={!paperlessUrl} onClick={() => paperlessUrl && window.open(`${paperlessUrl}/documents/${document.id}/details`, "_blank", "noopener,noreferrer")}><Icon name="open" size={17}/>In Paperless öffnen</button>}</aside></div>;
 }
 
 function LegacyDrawer({ document, areas, paperlessUrl, editMode, close, update }: { document: DocumentItem; areas: Area[]; paperlessUrl: string; editMode: boolean; close: () => void; update: (doc: DocumentItem) => void }) {
@@ -960,6 +1224,7 @@ export default function PersonalLab() {
   const [correspondents, setCorrespondents] = useState<string[]>([]);
   const [areaId, setAreaId] = useState<string | null>(null);
   const [subarea, setSubarea] = useState<string | null>(null);
+  const [yearSelection, setYearSelection] = useState<YearSelection>(null);
   const [query, setQuery] = useState("");
   const [searchRevision, setSearchRevision] = useState(0);
   const [document, setDocument] = useState<DocumentItem | null>(null);
@@ -972,7 +1237,8 @@ export default function PersonalLab() {
   const [undoMove, setUndoMove] = useState<UndoMove>(null);
   const [hydrated, setHydrated] = useState(false);
   const [documentScope, setDocumentScope] = useState<DocumentScope>("all");
-  const [sortDirection, setSortDirection] = useState<DocumentSortDirection>("desc");
+  const [sortDirection, setSortDirection] = useState<DocumentSortMode>("desc");
+  const [appVersion, setAppVersion] = useState("2.7.2");
   const [config, setConfig] = useState<AppConfig>({ paperless: false, paperlessUrl: "", analyzer: false, analyzerUrl: "", rag: false, ragUrl: "", homeAssistant: false, homeAssistantUrl: "", energyLab: false, financeLab: false, autoSync: false, syncMinutes: 15 });
   const [pageLayouts, setPageLayouts] = useState<PageLayouts>(() => normalizePageLayouts(DEFAULT_PAGE_LAYOUTS));
   const [financeAccountAssignments, setFinanceAccountAssignments] = useState<FinanceAccountAssignments>({});
@@ -981,13 +1247,29 @@ export default function PersonalLab() {
   const [energyMetricSelections, setEnergyMetricSelections] = useState<EnergyMetricSelections>({});
   const [lastSync, setLastSync] = useState<string | null>(null);
   const [selectedSensorCount, setSelectedSensorCount] = useState(0);
+  const [dataError, setDataError] = useState("");
+  const [syncWarning, setSyncWarning] = useState("");
+  const revision = useRef<string | null>(null);
+  const saveQueue = useRef<Promise<void>>(Promise.resolve());
+  const lastQueued = useRef("");
+  const latestDraft = useRef("");
+  const saveBlocked = useRef(false);
+  const downloadDraft = () => {
+    const link = window.document.createElement("a");
+    const url = URL.createObjectURL(new Blob([latestDraft.current], { type: "application/json" }));
+    link.href = url; link.download = "personallab-ungespeicherter-entwurf.json";
+    link.click(); window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+  };
   useEffect(() => {
     let active = true;
     fetch("/api/state", { cache: "no-store" }).then(response => {
       if (!response.ok) throw new Error("Datendienst nicht erreichbar");
       return response.json();
-    }).then((payload: { areas?: Area[]; documents?: DocumentItem[]; disabledDocuments?: DocumentItem[]; correspondents?: string[]; pageLayouts?: PageLayouts; financeAccountAssignments?: FinanceAccountAssignments; financeDataSelections?: FinanceDataSelections; energyProviderAssignments?: EnergyProviderAssignments; energyMetricSelections?: EnergyMetricSelections; config?: AppConfig; lastSync?: string | null; haSensors?: string[] }) => {
+    }).then((payload: { version?: string; revision?: string; syncWarning?: string; areas?: Area[]; documents?: DocumentItem[]; disabledDocuments?: DocumentItem[]; correspondents?: string[]; pageLayouts?: PageLayouts; financeAccountAssignments?: FinanceAccountAssignments; financeDataSelections?: FinanceDataSelections; energyProviderAssignments?: EnergyProviderAssignments; energyMetricSelections?: EnergyMetricSelections; config?: AppConfig; lastSync?: string | null; haSensors?: string[] }) => {
       if (!active || !Array.isArray(payload.areas) || !Array.isArray(payload.documents)) return;
+      revision.current = payload.revision ?? null;
+      setAppVersion(payload.version ?? "2.7.2");
+      setSyncWarning(payload.syncWarning ?? "");
       const normalizePayloadDocument = (item: DocumentItem) => {
         const value = String(item.date ?? "");
         const parts = value.slice(0, 10).split("-");
@@ -1010,7 +1292,7 @@ export default function PersonalLab() {
       setLastSync(payload.lastSync ?? null);
       setSelectedSensorCount(payload.haSensors?.length ?? 0);
       setHydrated(true);
-    }).catch(() => { /* Die interaktive Vorschau bleibt ohne lokalen Datendienst nutzbar. */ });
+    }).catch(() => { if (active) setDataError("Datendienst nicht erreichbar. Änderungen können derzeit nicht gespeichert werden."); });
     return () => { active = false; };
   }, []);
   useEffect(() => {
@@ -1024,9 +1306,30 @@ export default function PersonalLab() {
     return () => window.removeEventListener("keydown", focusSearch);
   }, []);
   useEffect(() => {
+    const saved = window.localStorage.getItem("personallab-document-sort") as DocumentSortMode | null;
+    if (saved && ["desc", "asc", "added-desc", "title-asc", "title-desc", "correspondent-asc", "type-asc"].includes(saved)) setSortDirection(saved);
+  }, []);
+  useEffect(() => { window.localStorage.setItem("personallab-document-sort", sortDirection); }, [sortDirection]);
+  useEffect(() => {
     if (!hydrated) return;
+    const draft = JSON.stringify({ areas, documents, correspondents, pageLayouts, financeAccountAssignments, financeDataSelections, energyProviderAssignments, energyMetricSelections });
+    latestDraft.current = draft;
+    // Hydration is a read, not a user edit.
+    if (!lastQueued.current) { lastQueued.current = draft; return; }
+    if (lastQueued.current === draft || saveBlocked.current) return;
     const timer = window.setTimeout(() => {
-      fetch("/api/state", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ areas, documents, correspondents, pageLayouts, financeAccountAssignments, financeDataSelections, energyProviderAssignments, energyMetricSelections }) }).catch(() => undefined);
+      lastQueued.current = draft;
+      saveQueue.current = saveQueue.current.then(async () => {
+        if (saveBlocked.current) return;
+        const response = await fetch("/api/state", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ ...JSON.parse(draft), revision: revision.current }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Speichern fehlgeschlagen");
+        revision.current = payload.revision;
+        setDataError("");
+      }).catch(error => {
+        saveBlocked.current = true;
+        setDataError(`${error.message}. Deine Änderungen bleiben hier sichtbar. Sichere den Entwurf vor dem Neuladen.`);
+      });
     }, 350);
     return () => window.clearTimeout(timer);
   }, [areas, documents, correspondents, pageLayouts, financeAccountAssignments, financeDataSelections, energyProviderAssignments, energyMetricSelections, hydrated]);
@@ -1034,19 +1337,20 @@ export default function PersonalLab() {
     const countNode = (areaId: string, rootId: string, node: Subarea): Subarea => {
       const children = (node.children ?? []).map(child => countNode(areaId, rootId, child));
       const ids = new Set(descendantUids(areaId, node));
-      const direct = documents.filter(doc => doc.area === areaId && (
+      const direct = documents.filter(doc => documentInArea(doc, areaId) && ((doc.area === areaId && (
         ids.has(doc.tileId ?? "")
         || (node.id === rootId && !doc.tileId && doc.subarea === rootId)
-        || (node.id !== rootId && doc.subarea === rootId && groupName(doc, "Sonstiges") === node.name)
+        || (node.id !== rootId && doc.subarea === rootId && groupName(doc, "Sonstiges") === node.name)))
+        || secondaryTiles(doc).some(uid => ids.has(uid))
       )).length;
       return { ...node, children, count: direct };
     };
-    return areas.map(item => ({ ...item, count: documents.filter(doc => doc.area === item.id).length, subareas: item.subareas.map(sub => countNode(item.id, sub.id, sub)) }));
+    return areas.map(item => ({ ...item, count: documents.filter(doc => documentInArea(doc, item.id)).length, subareas: item.subareas.map(sub => countNode(item.id, sub.id, sub)) }));
   }, [areas, documents]);
   const area = countedAreas.find(item => item.id === areaId) ?? null;
-  const navigate = (next: Screen) => { setDocument(null); setDocumentEditor(null); setScreen(next); setQuery(""); setSelected([]); if (next === "documents") setDocumentScope("all"); if (next !== "area") { setAreaId(null); setSubarea(null); } };
+  const navigate = (next: Screen) => { setDocument(null); setDocumentEditor(null); setScreen(next); setQuery(""); setSelected([]); setYearSelection(null); if (next === "documents") setDocumentScope("all"); if (next !== "area") { setAreaId(null); setSubarea(null); } };
   const openDocuments = (scope: DocumentScope) => { setDocument(null); setDocumentEditor(null); setDocumentScope(scope); setQuery(""); setSelected([]); setScreen("documents"); };
-  const openArea = (next: Area, nextSubarea?: string) => { setDocument(null); setDocumentEditor(null); setAreaId(next.id); setSubarea(nextSubarea ?? null); setQuery(""); setScreen("area"); };
+  const openArea = (next: Area, nextSubarea?: string, year?: string) => { setDocument(null); setDocumentEditor(null); setAreaId(next.id); setSubarea(nextSubarea ?? null); setYearSelection(nextSubarea && year ? { key: nextSubarea, value: year } : null); setQuery(""); setScreen("area"); };
   const toggleEdit = () => { setEditMode(value => !value); setSelected([]); setEditor(null); setTreeNodeEditor(null); setAssigning(false); };
   const slug = (name: string) => name.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || `kachel-${Date.now()}`;
   const saveTile = (name: string, description: string, tone: Tone, icon: IconName) => {
@@ -1105,7 +1409,7 @@ export default function PersonalLab() {
   const removeNode = (targetArea: string, uid: string) => {
     const target = areas.find(item => item.id === targetArea); const node = target && findNode(targetArea, target.subareas, uid); if (!node) return;
     const ids = new Set(descendantUids(targetArea, node));
-    if (documents.some(doc => doc.area === targetArea && ids.has(doc.tileId ?? ""))) { window.alert("Dieser Listeneintrag enthält noch Dokumente. Verschiebe sie zuerst an ein anderes Ziel."); return; }
+    if (documents.some(doc => documentInArea(doc, targetArea) && (ids.has(doc.tileId ?? "") || secondaryTiles(doc).some(tileId => ids.has(tileId))))) { window.alert("Dieser Listeneintrag enthält noch Dokumente. Verschiebe sie zuerst an ein anderes Ziel."); return; }
     if (!window.confirm(`„${node.name}“ wirklich löschen?`)) return;
     setAreas(current => current.map(item => item.id === targetArea ? { ...item, subareas: removeNodeTree(targetArea, item.subareas, uid) } : item));
   };
@@ -1155,9 +1459,11 @@ export default function PersonalLab() {
     setDocumentEditor(current => current?.id === next.id ? next : current);
   };
   const deactivateDocument = async (target: DocumentItem) => {
-    const response = await fetch(`/api/documents/${target.id}/disable`, { method: "POST" });
+    await saveQueue.current;
+    const response = await fetch(`/api/documents/${target.id}/disable`, { method: "POST", headers: { "if-match": revision.current ?? "" } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error ?? "Das Dokument konnte in PersonalLab nicht deaktiviert werden.");
+    revision.current = payload.revision;
     setDocuments(current => current.filter(doc => doc.id !== target.id));
     setDisabledDocuments(current => current.some(doc => doc.id === target.id) ? current : [...current, target]);
     setDocument(current => current?.id === target.id ? null : current);
@@ -1165,9 +1471,11 @@ export default function PersonalLab() {
     setSelected(current => current.filter(id => id !== target.id));
   };
   const restoreDocument = async (target: DocumentItem) => {
-    const response = await fetch(`/api/documents/${target.id}/restore`, { method: "POST" });
+    await saveQueue.current;
+    const response = await fetch(`/api/documents/${target.id}/restore`, { method: "POST", headers: { "if-match": revision.current ?? "" } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error ?? "Das Dokument konnte nicht wieder eingeblendet werden.");
+    revision.current = payload.revision;
     const restored = payload.document ?? target;
     setDisabledDocuments(current => current.filter(doc => doc.id !== target.id));
     setDocuments(current => current.some(doc => doc.id === target.id) ? current : [restored, ...current]);
@@ -1211,11 +1519,13 @@ export default function PersonalLab() {
   const commonList = { editMode, selected, setSelected, assign: () => { if (selected.length) setAssigning(true); }, dragDocument, sortDirection, setSortDirection };
   return <div className={`app ${editMode ? "editing" : ""}`}>
     <Header screen={screen} navigate={navigate} editMode={editMode} toggleEdit={toggleEdit}/>
+    {dataError && <div className="editNotice" role="alert"><div><strong>Speicherhinweis</strong><p>{dataError}</p><button className="quietButton" onClick={downloadDraft}>Entwurf sichern</button></div></div>}
+    {syncWarning && <div className="editNotice" role="status"><p>{syncWarning}</p></div>}
     <div className="workspaceShell">
-      <NavigationSidebar areas={countedAreas} documents={documents} editMode={editMode} activeAreaId={screen === "area" ? areaId : null} activeNodeKey={screen === "area" ? subarea : null} toggleEdit={toggleEdit} openArea={openArea} editArea={item => setEditor({ kind: "area", areaId: item.id })} addArea={() => setEditor({ kind: "area" })} drop={assignDocuments} renameNode={renameNode} addChild={addChildNode} removeNode={removeNode}/>
-      <main className="page">{document && <DocumentWorkspace document={document} paperlessUrl={config.paperlessUrl} editMode={editMode} back={() => setDocument(null)} edit={() => setDocumentEditor(document)} deactivate={() => deactivateDocument(document)}/>}<div className="screenContent" hidden={Boolean(document)}>{query.trim() ? <SearchResults documents={documents} query={query} searchRevision={searchRevision} setQuery={submitSearch} analyzer={config.analyzer} rag={config.rag} openDocument={setDocument} {...commonList}/> : <>{screen === "overview" && <Overview documents={documents} openDocuments={openDocuments} paperlessUrl={config.paperlessUrl} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "area" && area && <AreaView area={area} documents={documents} config={config} pageLayouts={pageLayouts} setPageLayouts={setPageLayouts} financeAccountAssignments={financeAccountAssignments} updateFinanceAccountAssignment={updateFinanceAccountAssignment} financeDataSelections={financeDataSelections} updateFinanceDataSelection={updateFinanceDataSelection} energyProviderAssignments={energyProviderAssignments} updateEnergyProviderAssignment={updateEnergyProviderAssignment} energyMetricSelections={energyMetricSelections} updateEnergyMetricSelection={updateEnergyMetricSelection} selectedSubarea={subarea} chooseSubarea={setSubarea} goBack={() => navigate("overview")} query={query} setQuery={submitSearch} openDocument={setDocument} editSubarea={id => setEditor({ kind: "subarea", areaId: area.id, subareaId: id })} addSubarea={() => setEditor({ kind: "subarea", areaId: area.id })} addGroup={(subareaId, name) => addGroup(area.id, subareaId, name)} renameParty={renameParty} {...commonList}/>} {screen === "documents" && <DocumentsView documents={documents} scope={documentScope} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "home-assistant" && <HomeAssistant configured={config.homeAssistant} onCountChange={setSelectedSensorCount}/>} {screen === "settings" && <Settings config={config} documentCount={documents.length} disabledDocuments={disabledDocuments} sensorCount={selectedSensorCount} lastSync={lastSync} goSensors={() => navigate("home-assistant")} restoreDocument={restoreDocument}/>}</>}</div></main>
+      <NavigationSidebar areas={countedAreas} documents={documents} editMode={editMode} activeAreaId={screen === "area" ? areaId : null} activeNodeKey={screen === "area" ? subarea : null} activeYear={screen === "area" && yearSelection?.key === subarea ? yearSelection.value : null} toggleEdit={toggleEdit} openArea={openArea} editArea={item => setEditor({ kind: "area", areaId: item.id })} addArea={() => setEditor({ kind: "area" })} drop={assignDocuments} renameNode={renameNode} addChild={addChildNode} removeNode={removeNode}/>
+      <main className="page">{document && <DocumentWorkspace document={document} paperlessUrl={config.paperlessUrl} editMode={editMode} back={() => setDocument(null)} edit={() => setDocumentEditor(document)} deactivate={() => deactivateDocument(document)}/>}<div className="screenContent" hidden={Boolean(document)}>{query.trim() ? <SearchResults documents={documents} query={query} searchRevision={searchRevision} setQuery={submitSearch} analyzer={config.analyzer} rag={config.rag} openDocument={setDocument} {...commonList}/> : <>{screen === "overview" && <Overview documents={documents} openDocuments={openDocuments} paperlessUrl={config.paperlessUrl} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "area" && area && <AreaView area={area} documents={documents} config={config} pageLayouts={pageLayouts} setPageLayouts={setPageLayouts} financeAccountAssignments={financeAccountAssignments} updateFinanceAccountAssignment={updateFinanceAccountAssignment} financeDataSelections={financeDataSelections} updateFinanceDataSelection={updateFinanceDataSelection} energyProviderAssignments={energyProviderAssignments} updateEnergyProviderAssignment={updateEnergyProviderAssignment} energyMetricSelections={energyMetricSelections} updateEnergyMetricSelection={updateEnergyMetricSelection} selectedSubarea={subarea} chooseSubarea={id => { setYearSelection(null); setSubarea(id); }} yearSelection={yearSelection} setYearSelection={setYearSelection} goBack={() => navigate("overview")} query={query} setQuery={submitSearch} openDocument={setDocument} editSubarea={id => setEditor({ kind: "subarea", areaId: area.id, subareaId: id })} addSubarea={() => setEditor({ kind: "subarea", areaId: area.id })} addGroup={(subareaId, name) => addGroup(area.id, subareaId, name)} renameParty={renameParty} {...commonList}/>} {screen === "documents" && <DocumentsView documents={documents} scope={documentScope} query={query} setQuery={submitSearch} openDocument={setDocument} {...commonList}/>} {screen === "home-assistant" && <HomeAssistant configured={config.homeAssistant} onCountChange={setSelectedSensorCount}/>} {screen === "settings" && <Settings config={config} documentCount={documents.length} disabledDocuments={disabledDocuments} sensorCount={selectedSensorCount} lastSync={lastSync} goSensors={() => navigate("home-assistant")} restoreDocument={restoreDocument}/>}</>}</div></main>
     </div>
-    <footer><span>PersonalLab 2.5.11</span><span>lokal auf deinem ZimaOS</span><span>by Lrd.Tiberius</span></footer>
+    <footer><span>PersonalLab {appVersion}</span><span>lokal auf deinem ZimaOS</span><span>by Lrd.Tiberius</span></footer>
     {undoMove && <div className="undoToast" role="status"><span><Icon name="check" size={17}/>{undoMove.message}</span><button onClick={undoLastMove}>Rückgängig</button><button className="toastClose" onClick={() => setUndoMove(null)} aria-label="Hinweis schließen"><Icon name="close" size={14}/></button></div>}
     {documentEditor && <Drawer document={documentEditor} areas={countedAreas} correspondents={correspondents} paperlessUrl={config.paperlessUrl} editMode={editMode} close={() => setDocumentEditor(null)} update={updateDocument} addCorrespondent={addCorrespondent} addGroup={addGroup}/>} {editor && <TileEditor key={`${editor.kind}-${editor.areaId ?? "new"}-${editor.kind === "subarea" ? editor.subareaId ?? "new" : ""}`} editor={editor} areas={areas} close={() => setEditor(null)} save={saveTile} remove={removeTile} move={moveTile}/>} {treeNodeEditor && <TreeNodeEditor key={`${treeNodeEditor.areaId}-${treeNodeEditor.uid ?? `new-${treeNodeEditor.parentUid}`}`} editor={treeNodeEditor} areas={areas} close={() => setTreeNodeEditor(null)} save={saveTreeNode} move={moveTreeNode}/>} {assigning && <DeepAssignmentDialog count={selected.length} areas={countedAreas} correspondents={correspondents} close={() => setAssigning(false)} apply={applyAssignment}/>}
   </div>;

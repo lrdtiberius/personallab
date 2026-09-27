@@ -10,7 +10,7 @@ function cleanTitle(value) {
 
 function known(value) {
   const candidate = clean(value);
-  return candidate && !UNKNOWN.test(candidate) ? candidate : "";
+  return candidate && !/^(?:null|undefined|\d+)$/i.test(candidate) && !UNKNOWN.test(candidate) ? candidate : "";
 }
 
 function isoDate(value) {
@@ -45,6 +45,7 @@ function extractInvoiceNumber(content) {
 }
 
 function parseAmount(value) {
+  if (!clean(value)) return null;
   const normalized = clean(value).replace(/\s/g, "").replace(/\.(?=\d{3}(?:\D|$))/g, "").replace(",", ".");
   const amount = Number(normalized);
   return Number.isFinite(amount) ? amount : null;
@@ -55,10 +56,9 @@ function extractInvoiceAmount(content) {
   const labeled = content.match(new RegExp(`(?:rechnungssumme|rechnungsbetrag|gesamtbetrag|gesamtsumme|endbetrag|zahlbetrag|zu zahlen|summe brutto)[^\\d]{0,80}${amountToken}\\s*(?:€|EUR)`, "i"));
   const preferred = parseAmount(labeled?.[1]);
   if (preferred != null) return preferred;
-  const amounts = [...content.matchAll(new RegExp(`${amountToken}\\s*(?:€|EUR)`, "gi"))]
-    .map(match => parseAmount(match[1]))
-    .filter(value => value != null && value >= 0);
-  return amounts.length ? Math.max(...amounts) : null;
+  // A maximum unlabeled amount may be a previous balance, credit limit or item
+  // price. Only a labeled total is safe to describe as an invoice total.
+  return null;
 }
 
 function smartBrand(value) {
@@ -89,7 +89,7 @@ function meaningfulSubject(title, kind, correspondent) {
     .replace(/\b\d{7,}\b/g, "")
     .replace(/\s+/g, " ")
     .trim();
-  if (!candidate || /^(?:rechnung|invoice|beleg|scan|dokument|import)(?:\s+\S{0,12})?$/i.test(candidate)) return "";
+  if (!candidate || /^\d+$/.test(candidate) || /^(?:rechnung|invoice|beleg|scan|dokument|import)(?:\s+\S{0,12})?$/i.test(candidate)) return "";
   if (kind && candidate.toLocaleLowerCase("de-DE") === kind.toLocaleLowerCase("de-DE")) return "";
   if (correspondent && candidate.toLocaleLowerCase("de-DE") === correspondent.toLocaleLowerCase("de-DE")) return "";
   return candidate;
@@ -101,8 +101,27 @@ function formatCurrency(amount) {
 
 export function enrichPaperlessDocument({ title = "", content = "", correspondent = "", documentType = "", analysisSummary = "", date = "" } = {}) {
   const ocr = String(content ?? "").replace(/\u00a0/g, " ");
+  // Account statements contain words like "Entgeltabrechnung" and "Beleg".
+  // They must never enter invoice extraction, even when these occur in OCR.
+  if (/konto[\s_-]*(?:\d+[\s_-]*)?auszug/i.test(`${documentType} ${title}`)) {
+    const balances = [...ocr.matchAll(/Kontostand\s+(?:am|zum)\s+(\d{1,2}\.\d{1,2}\.\d{4})(?:\s+um\s+\d{1,2}:\d{2}\s+Uhr)?\s*[:：]?\s*(?:EUR|€)?\s*([−-]?\s*\d+(?:[.]\d{3})*,\d{2})\s*(H|S)?\b/gi)]
+      .map(match => ({ date: isoDate(match[1]), amount: parseAmount(match[2].replace("−", "-")), debit: match[3]?.toUpperCase() === "S" }))
+      .filter(item => item.date && item.amount != null)
+      .sort((a, b) => a.date.localeCompare(b.date));
+    const closing = balances.at(-1);
+    const bank = known(correspondent);
+    const base = `Kontoauszug${bank ? ` von ${bank}` : ""}`;
+    return {
+      title: ["Kontoauszug", bank].filter(Boolean).join(" · "),
+      summary: closing
+        ? `${base}. Kontostand am ${readableDate(closing.date)}: ${formatCurrency(closing.debit ? -Math.abs(closing.amount) : closing.amount)}.`
+        : `${base}. Angaben zu Buchungen und Kontoständen sind im Originaldokument enthalten.`,
+      correspondent: bank, date: "", invoiceNumber: "", amount: null,
+    };
+  }
   const kind = known(documentType) || (/\brechnung\b|\binvoice\b/i.test(`${title} ${ocr.slice(0, 3000)}`) ? "Rechnung" : "");
-  const isInvoice = /rechnung|invoice|quittung|kassenbon|beleg/i.test(`${kind} ${title} ${ocr.slice(0, 3000)}`);
+  const isInvoice = /rechnung|invoice|quittung|kassenbon/i.test(`${kind} ${title}`)
+    || (!kind && /(?:rechnungsnummer|rechnungsbetrag|rechnungssumme|invoice number)/i.test(ocr.slice(0, 3000)));
   if (!isInvoice) return { title: "", summary: "", correspondent: "", date: "", invoiceNumber: "", amount: null };
 
   const inferredCorrespondent = known(correspondent) || extractCorrespondent(ocr);

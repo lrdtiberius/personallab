@@ -10,7 +10,7 @@ fi
 
 data_file="/DATA/AppData/personal-lab/personallab.json"
 if [ -f "$data_file" ]; then
-  backup_file="${data_file}.backup-v2.5.11-$(date +%Y%m%d-%H%M%S)"
+  backup_file="${data_file}.backup-v2.7.2-$(date +%Y%m%d-%H%M%S)"
   cp -p "$data_file" "$backup_file"
   echo "Datensicherung erstellt: $backup_file"
 fi
@@ -19,4 +19,4 @@ fi
 docker compose --env-file .env -f compose.yaml up -d --force-recreate
 docker compose --env-file .env -f compose.yaml ps
 
-echo "PersonalLab 2.5.11 ist aktualisiert. Datenordner und .env blieben erhalten."
+echo "PersonalLab 2.7.2 ist aktualisiert. Datenordner und .env blieben erhalten."

@@ -1,0 +1,137 @@
+{
+  "version": "navigation-taxonomy-v2.1",
+  "purpose": "Objekt- und Vertragsinstanz-basierte Ablage statt pauschaler Jahresordner",
+  "coreRules": [
+    {
+      "id": "year-folders-only-for-recurring-documents",
+      "rule": "Jahresordner dürfen nur für wiederkehrende Serienbelege verwendet werden.",
+      "examples": [
+        "Kontoauszüge",
+        "Gehaltsabrechnungen",
+        "monatliche Rechnungen",
+        "Beitragsrechnungen",
+        "Jahresabrechnungen",
+        "Steuerbescheinigungen",
+        "Verbrauchsabrechnungen"
+      ]
+    },
+    {
+      "id": "no-year-folders-for-contract-instances",
+      "rule": "Verträge, Vertragsänderungen, Kündigungen, Kredite, Fahrzeugakten, Mobilfunkverträge und Versicherungsverträge dürfen nicht primär nach Jahr abgelegt werden. Sie gehören unter die passende Vertragsinstanz oder das passende Objekt."
+    },
+    {
+      "id": "contract-instance-first",
+      "rule": "Wenn ein Dokument eine konkrete Vertragsnummer, Kundennummer, Rufnummer, IBAN, Zählernummer, Versicherungsnummer, FIN, Fahrzeugbezeichnung oder Kreditreferenz enthält, muss zuerst diese Instanz als Ablageziel bevorzugt werden."
+    },
+    {
+      "id": "series-documents-under-instance-year",
+      "rule": "Serienbelege werden unter der passenden Instanz abgelegt und dort optional nach Jahr gruppiert."
+    }
+  ],
+  "targetStructures": {
+    "mobilfunk": {
+      "pattern": [
+        "Verträge & Abonnements",
+        "Mobilfunk",
+        "{Anbieter}",
+        "Vertrag {Rufnummer oder Kundennummer}",
+        "{Dokumentgruppe}",
+        "{Jahr nur bei Serienbelegen}"
+      ],
+      "documentGroups": [
+        "Vertragsunterlagen",
+        "Vertragsänderungen",
+        "Geräte / Hardware",
+        "Rechnungen",
+        "Kündigung / Widerruf",
+        "Korrespondenz"
+      ]
+    },
+    "fahrzeuge": {
+      "pattern": [
+        "Fahrzeuge",
+        "{Fahrzeug}",
+        "{Dokumentgruppe}",
+        "{Jahr nur bei Serienbelegen}"
+      ],
+      "documentGroups": [
+        "Fahrzeugakte",
+        "Kaufvertrag",
+        "Finanzierung / Kredit",
+        "Versicherung",
+        "Steuer",
+        "Werkstatt & Reparaturen",
+        "Umbauten / Camper",
+        "Verkauf / Abmeldung"
+      ]
+    },
+    "versicherungen": {
+      "pattern": [
+        "Versicherungen & Vorsorge",
+        "{Versicherer}",
+        "Vertrag {Versicherungsschein oder Vertragsnummer}",
+        "{Dokumentgruppe}",
+        "{Jahr nur bei Serienbelegen}"
+      ],
+      "documentGroups": [
+        "Police",
+        "Vertragsänderungen",
+        "Beitragsrechnungen",
+        "Schadenfälle",
+        "Kündigung",
+        "Korrespondenz"
+      ]
+    },
+    "finanzen": {
+      "pattern": [
+        "Finanzen & Steuern",
+        "{Bank}",
+        "{Konto oder Kredit}",
+        "{Dokumentgruppe}",
+        "{Jahr nur bei Serienbelegen}"
+      ],
+      "documentGroups": [
+        "Kontoauszüge",
+        "Kreditvertrag",
+        "Zinsbescheinigungen",
+        "Steuerbescheinigungen",
+        "Korrespondenz"
+      ]
+    },
+    "energie": {
+      "pattern": [
+        "Energie",
+        "{Sparte}",
+        "{Anbieter / Vertragskonto / Zählernummer}",
+        "{Dokumentgruppe}",
+        "{Jahr nur bei Serienbelegen}"
+      ],
+      "documentGroups": [
+        "Vertrag",
+        "Abschlagsplan",
+        "Rechnungen",
+        "Jahresabrechnungen",
+        "Anbieterwechsel / Kündigung",
+        "Netzanschluss"
+      ]
+    }
+  },
+  "manualTruths": [
+    {
+      "id": "vodafone-current-contract",
+      "truth": "Vodafone Mobilfunkvertrag mit Kundennummer 108984949 und Rufnummer 00491736547129 ist aktiv. Vertragsübersicht vom 17.08.2026, Mindestlaufzeit bis 15.08.2028."
+    },
+    {
+      "id": "golf-bnp-ended",
+      "truth": "Golf BNP-Paribas-Kreditvertrag ist beendet und darf nicht aktiv gesetzt werden."
+    },
+    {
+      "id": "golf-sparkasse-abloesung",
+      "truth": "Nur Sparkasse-Ablösung für Golf darf als noch relevant/aktiv behandelt werden."
+    },
+    {
+      "id": "strom-current",
+      "truth": "Nur aktueller Stromvertrag ab 21.09.2026 ist aktiv. Ältere Stromverträge sind beendet."
+    }
+  ]
+}

@@ -1,6 +1,6 @@
 services:
   personal-lab-api:
-    image: personal-lab-api:2.5.11
+    image: personal-lab-api:2.7.2
     container_name: personal-lab-api
     restart: unless-stopped
     environment:
@@ -29,7 +29,7 @@ services:
       - no-new-privileges:true
 
   personal-lab-web:
-    image: personal-lab-web:2.5.11
+    image: personal-lab-web:2.7.2
     container_name: personal-lab-web
     restart: unless-stopped
     depends_on:
@@ -42,6 +42,41 @@ services:
       PERSONALLAB_API_URL: http://personal-lab-api:8095
     ports:
       - "${PERSONALLAB_BIND_ADDRESS:-0.0.0.0}:${PERSONALLAB_HOST_PORT:-8094}:3000"
+    networks:
+      - personal-lab
+    security_opt:
+      - no-new-privileges:true
+
+  personal-lab-qwen-scanner:
+    build:
+      context: .
+      dockerfile: Dockerfile.qwen-scanner
+    image: personallab-qwen-scanner:2.2.0
+    container_name: personal-lab-qwen-scanner
+    restart: unless-stopped
+    depends_on:
+      personal-lab-api:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Europe/Berlin}
+      PERSONALLAB_API_URL: http://personal-lab-api:8095
+      PERSONALLAB_STATE_FILE: /data/personallab.json
+      PERSONALLAB_COMBINED_FILE: /config/assignment-lifecycle-report-v2.3.json
+      PERSONALLAB_LIFECYCLE_FILE: /config/lifecycle-contract-v3.3.json
+      PERSONALLAB_CONFIRMED_STATUSES_FILE: /config/confirmed-object-statuses-v2.0.json
+      PERSONALLAB_NAVIGATION_TAXONOMY_FILE: /config/navigation-taxonomy-v2.1.json
+      QWEN_SCANNER_WORK_DIR: /data/qwen-scanner
+      QWEN_SCANNER_INTERVAL_SECONDS: ${QWEN_SCANNER_INTERVAL_SECONDS:-60}
+      QWEN_SCANNER_RETRY_SECONDS: ${QWEN_SCANNER_RETRY_SECONDS:-60}
+      QWEN_SCANNER_BATCH_SIZE: ${QWEN_SCANNER_BATCH_SIZE:-10}
+      QWEN_SCANNER_FIRST_START: ${QWEN_SCANNER_FIRST_START:-scan-all-v2.1}
+      QWEN_SCANNER_APPLY: ${QWEN_SCANNER_APPLY:-1}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      QWEN_SHADOW_MODEL: ${QWEN_SHADOW_MODEL:-qwen3:4b}
+      QWEN_RELEVANT_FROM: ${QWEN_RELEVANT_FROM:-2019-01-01}
+    volumes:
+      - /DATA/AppData/personal-lab:/data
+      - /DATA/AppData/personal-lab/qwen-config:/config:ro
     networks:
       - personal-lab
     security_opt:

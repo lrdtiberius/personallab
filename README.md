@@ -1,4 +1,24 @@
-# PersonalLab 2.5.11
+# PersonalLab 2.7.2
+
+Der veröffentlichte Quellstand entspricht den am 23. September 2026 gebauten und auf dem AM06 laufenden PersonalLab-Images. Die Anwendung besteht aus API, Weboberfläche und dem optionalen Qwen-Scanner.
+
+## Neu in 2.7.2
+
+- manuelle Querverknüpfungen zwischen Dokumenten und Verträgen mit Auswahl vorhandener Ziele
+- erweiterte Dokumentdarstellung und Metadatenaufbereitung
+- konsistente API- und Web-Versionsanzeige `2.7.2`
+- neuer Metadatenbaustein der lokalen API
+- optionaler Qwen-Scanner 2.2.0 mit dauerhaftem Verarbeitungsstand, Wiederholschutz und eigener Navigationstaxonomie
+- Scanner-Konfiguration vollständig über Umgebungsvariablen; keine private Serveradresse ist im Repository erforderlich
+- Docker-Compose-Beispiel für API, Weboberfläche und Scanner
+- aktualisierte produktive Web-Abhängigkeiten ohne kritische bekannte `npm audit`-Meldung
+
+Details und Betriebsgrenzen stehen im [Handbuch](HANDBUCH.md), alle Änderungen im [Changelog](CHANGELOG.md).
+
+Bei den verbleibenden Audit-Hinweisen handelt es sich um Entwicklungswerkzeuge aus
+`drizzle-kit` und der noch verwendeten Vinext-Vorabversion. Ihre automatische Behebung
+würde inkompatible Hauptversionswechsel erzwingen; sie werden deshalb nicht mit
+`npm audit fix --force` überschrieben.
 
 ## Neu in 2.5.11
 

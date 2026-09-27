@@ -6,6 +6,8 @@ import { refreshContractStatuses } from "./contracts.mjs";
 import { enrichPaperlessDocument } from "./document-enrichment.mjs";
 import { readableGroup, sanitizeDocumentGroups } from "./groups.mjs";
 import { normalizePageLayouts } from "./layouts.mjs";
+import { createHash, randomUUID } from "node:crypto";
+import { analyzerPresentation, readableMetadata, referenceName, repairReferences, textValue, usablePresentation } from "./metadata.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const port = Number.parseInt(process.env.PORT ?? "8095", 10);
@@ -29,6 +31,40 @@ const syncMinutes = Math.max(5, Number.parseInt(process.env.AUTO_SYNC_INTERVAL_M
 let state;
 let saveChain = Promise.resolve();
 let syncPromise = null;
+const ragSearchCache = new Map();
+const ragSearchCacheMs = 10 * 60 * 1000;
+
+function duplicateSignature(content) {
+  const normalized = String(content ?? "")
+    .normalize("NFKC")
+    .toLocaleLowerCase("de-DE")
+    .replace(/\s+/g, " ")
+    .trim();
+  return normalized.length >= 40 ? createHash("sha256").update(normalized).digest("hex") : "";
+}
+
+function financialAccountLabels(areas) {
+  const labels = new Map();
+  const visit = nodes => {
+    for (const node of nodes ?? []) {
+      const identifier = String(node?.hint ?? "").replace(/\s+/g, "").trim();
+      if (/^\d{8,12}$/.test(identifier) && String(node?.name ?? "").trim()) labels.set(identifier, String(node.name).trim());
+      visit(node?.children);
+    }
+  };
+  for (const area of areas ?? []) visit(area?.subareas);
+  return labels;
+}
+
+function matchedFinancialAccountLabel(labels, sources) {
+  for (const source of sources) {
+    for (const match of String(source ?? "").matchAll(/\b\d{8,12}\b/g)) {
+      const label = labels.get(match[0]);
+      if (label) return label;
+    }
+  }
+  return "";
+}
 
 function tileUid(areaId, tile) {
   return tile?.uid || `tile:${areaId}:${tile?.id ?? "unknown"}`;
@@ -93,14 +129,15 @@ function migrateV2(snapshot, defaults) {
   const areas = ensureWastewaterArea(existingAreas, defaults);
   const roots = new Map();
   for (const area of areas) for (const root of area.subareas ?? []) roots.set(`${area.id}:${root.id}`, tileUid(area.id, root));
-  const documents = refreshContractStatuses(sanitizeDocumentGroups((Array.isArray(snapshot.documents) ? snapshot.documents : []).map(document => ({
+  const documents = refreshContractStatuses((Array.isArray(snapshot.documents) ? snapshot.documents : []).map(document => ({
     ...document,
     tileId: document.tileId || roots.get(`${document.area}:${document.subarea}`) || "",
-  }))));
+  })));
   const migrated = {
     ...defaults,
     ...snapshot,
-    version: "2.5.11",
+    revision: randomUUID(),
+    version: "2.7.2",
     areas,
     documents,
     correspondents: Array.isArray(snapshot.correspondents) ? snapshot.correspondents : [],
@@ -124,20 +161,23 @@ async function initialState() {
     const stored = JSON.parse(await readFile(dataFile, "utf8"));
     return migrateV2(stored, defaults);
   } catch (error) {
-    if (error?.code !== "ENOENT") console.error("State konnte nicht gelesen werden:", error);
+    if (error?.code !== "ENOENT") throw new Error("Datendatei nicht lesbar. Start abgebrochen, vorhandene Datei bleibt erhalten.", { cause: error });
     return migrateV2(defaults, defaults);
   }
 }
 
 function persist() {
+  state.revision = randomUUID();
+  const revision = state.revision;
   const snapshot = JSON.stringify(state, null, 2);
-  saveChain = saveChain.then(async () => {
+  const saving = saveChain.then(async () => {
     await mkdir(dirname(dataFile), { recursive: true });
     const temporary = `${dataFile}.tmp`;
     await writeFile(temporary, snapshot, { mode: 0o600 });
     await rename(temporary, dataFile);
-  }).catch(error => console.error("State konnte nicht gespeichert werden:", error));
-  return saveChain;
+  });
+  saveChain = saving.catch(error => console.error("State konnte nicht gespeichert werden:", error));
+  return saving.then(() => revision);
 }
 
 function json(response, status, payload) {
@@ -151,7 +191,7 @@ async function bodyJson(request) {
   let length = 0;
   for await (const chunk of request) {
     length += chunk.length;
-    if (length > 8 * 1024 * 1024) throw new Error("Anfrage ist zu groß");
+    if (length > 64 * 1024 * 1024) throw new Error("Anfrage ist zu groß (maximal 64 MiB)");
     chunks.push(chunk);
   }
   if (!chunks.length) return {};
@@ -166,11 +206,14 @@ async function fetchJson(url, headers) {
 
 async function searchPaperlessRag(query) {
   if (!paperlessRagUrl) throw new Error("Paperless RAG ist nicht konfiguriert");
+  const cacheKey = query.trim().toLocaleLowerCase("de-DE");
+  const cached = ragSearchCache.get(cacheKey);
+  if (cached && Date.now() - cached.createdAt < ragSearchCacheMs) return { ...cached.payload, cached: true };
   const upstream = await fetch(`${paperlessRagUrl}/api/ask`, {
     method: "POST",
     headers: { "content-type": "application/json", accept: "application/json" },
     body: JSON.stringify({ question: query }),
-    signal: AbortSignal.timeout(310000),
+    signal: AbortSignal.timeout(90000),
   });
   if (!upstream.ok) throw new Error(`${upstream.status} ${upstream.statusText}: ${paperlessRagUrl}/api/ask`);
   const payload = await upstream.json();
@@ -184,12 +227,15 @@ async function searchPaperlessRag(query) {
     excerpt: String(source.excerpt ?? ""),
     score: Number(source.score ?? 0),
   })).filter(source => Number.isInteger(source.documentId) && activeDocumentIds.has(source.documentId));
-  return {
+  const result = {
     answer: String(payload.answer ?? ""),
     sources,
     durationMs: Number(payload.duration_ms ?? 0),
     mode: String(payload.search?.answer_mode ?? "retrieval"),
   };
+  ragSearchCache.set(cacheKey, { createdAt: Date.now(), payload: result });
+  while (ragSearchCache.size > 50) ragSearchCache.delete(ragSearchCache.keys().next().value);
+  return result;
 }
 
 async function proxyPaperlessDocument(response, documentId, kind) {
@@ -215,8 +261,8 @@ async function disablePersonalLabDocument(response, documentId) {
   if (!document && !alreadyDisabled) return json(response, 404, { error: "Dokument wurde in PersonalLab nicht gefunden" });
   state.documents = state.documents.filter(item => Number(item.id) !== id);
   state.disabledDocuments = normalizeDisabledDocuments([...(state.disabledDocuments ?? []), document ?? alreadyDisabled]);
-  await persist();
-  return json(response, 200, { status: alreadyDisabled ? "already-disabled" : "disabled", document: document ?? alreadyDisabled });
+  const revision = await persist();
+  return json(response, 200, { status: alreadyDisabled ? "already-disabled" : "disabled", document: document ?? alreadyDisabled, revision });
 }
 
 async function restorePersonalLabDocument(response, documentId) {
@@ -225,20 +271,28 @@ async function restorePersonalLabDocument(response, documentId) {
   if (!document) return json(response, 404, { error: "Deaktiviertes Dokument wurde nicht gefunden" });
   state.disabledDocuments = (state.disabledDocuments ?? []).filter(item => Number(item.id) !== id);
   if (!state.documents.some(item => Number(item.id) === id)) state.documents = refreshContractStatuses([document, ...state.documents]);
-  await persist();
-  return json(response, 200, { status: "restored", document });
+  const revision = await persist();
+  return json(response, 200, { status: "restored", document, revision });
 }
 
 async function fetchPages(endpoint, headers) {
   const items = [];
   let next = `${paperlessUrl}${endpoint}${endpoint.includes("?") ? "&" : "?"}page_size=100`;
   let pages = 0;
+  const visited = new Set();
   while (next && pages < 1000) {
+    next = new URL(next, paperlessUrl + "/").href;
+    if (new URL(next).origin !== new URL(paperlessUrl).origin) throw new Error("Paperless verweist auf einen fremden Server");
+    if (visited.has(next)) throw new Error("Paperless-Paginierung wiederholt eine Seite");
+    visited.add(next);
     const data = await fetchJson(next, headers);
-    items.push(...(Array.isArray(data) ? data : data.results ?? []));
-    next = Array.isArray(data) ? null : data.next;
+    const rows = Array.isArray(data) ? data : data.results;
+    if (!Array.isArray(rows)) throw new Error("Paperless liefert keine gültige Liste");
+    items.push(...rows);
+    next = Array.isArray(data) || !data.next ? null : new URL(data.next, next).href;
     pages += 1;
   }
+  if (next) throw new Error("Paperless-Paginierung unvollständig");
   return items;
 }
 
@@ -250,15 +304,39 @@ async function fetchAnalyzerDocuments() {
     const page = await fetchJson(`${analyzerUrl}/api/documents?limit=200&offset=${offset}`, { accept: "application/json" });
     if (!Array.isArray(page)) throw new Error("Analyzer liefert keine Dokumentliste");
     items.push(...page);
-    if (page.length < 200) break;
+    if (page.length < 200) return [...new Map(items.map(item => [Number(item.paperless_id), item])).values()];
     offset += page.length;
   }
-  return items;
+  throw new Error("Analyzer-Paginierung unvollständig");
 }
 
-function referenceName(value, lookup) {
-  if (value && typeof value === "object") return value.name ?? value.title ?? "";
-  return lookup.get(Number(value)) ?? "";
+function automaticPresentation(title, documentType, correspondent) {
+  if (/kontoauszug/i.test(`${documentType} ${title}`)) {
+    return {
+      title: ["Kontoauszug", correspondent].filter(Boolean).join(" · "),
+      summary: `Kontoauszug${correspondent ? ` von ${correspondent}` : ""}.`,
+    };
+  }
+  const parts = [documentType, correspondent, title].map(value => String(value ?? "").trim()).filter(Boolean);
+  return {
+    title: [...new Set(parts)].join(" · "),
+    summary: "Noch keine auswertbare Inhaltsangabe verfügbar.",
+  };
+}
+
+function constructionSecondaryTiles(item, correspondent, documentType, analysisSummary) {
+  const text = normalized([item.title, item.original_file_name, correspondent, documentType, analysisSummary].join(" "));
+  const links = [];
+  if (/architekt|architektur|town\s*&?\s*country|generalunternehmer|bauantrag|baugrund|bodenplatte|rohbau|erdarbeiten|baustrom|hausanschluss|bauprojekt|hausbau|baustoff|eigenleistung|bauleitung|bauabnahme/.test(text)) {
+    links.push("tile:living:construction");
+  }
+  if (/town\s*&?\s*country|generalunternehmer/.test(text)) links.push("tile:living:construction-town-country");
+  if (/architekt|architektur|bauantrag|statik|genehmigung|planung/.test(text)) links.push("tile:living:construction-planning");
+  if (/baustrom|hausanschluss|stromanschluss|gasanschluss|wasseranschluss|kanal|entwässerung/.test(text)) links.push("tile:living:construction-connections");
+  const divorceSignal = /\b(?:scheidung|scheidungsfolge|ausgleichszahlung|vermogensaufteilung)\b/.test(text);
+  if (divorceSignal) links.push("tile:legal:case-divorce");
+  if (divorceSignal && /sparkasse|sparkassen/.test(text)) links.push("tile:finance:sparkasse-1787835031950");
+  return [...new Set(links)];
 }
 
 function normalized(value) {
@@ -304,7 +382,7 @@ function classifyDocument(item, correspondent, documentType, tagNames, analysis 
     ["property", "ownership", /grundbuch|notar|kaufvertrag.*(haus|wohnung|grundstuck)|eigentum/],
     ["property", "property-tax", /grundsteuer|abgabenbescheid|grundbesitz/],
     ["property", "craft", /handwerker|heizung|schornsteinfeger|wartung.*(haus|therme)/],
-    ["hardware", "server", /nas|server|zimaos|synology|mini.?pc/],
+    ["hardware", "server", /\bnas\b|\bserver\b|zimaos|synology|mini.?pc/],
     ["hardware", "network", /router|switch|wlan|netzwerk|fritz.?box/],
     ["hardware", "av", /fernseher|tv |audio|lautsprecher|subwoofer|heimkino/],
     ["hardware", "mobile", /smartphone|tablet|iphone|ipad|mobiltelefon/],
@@ -326,66 +404,92 @@ function classifyDocument(item, correspondent, documentType, tagNames, analysis 
 async function syncPaperless() {
   if (!paperlessUrl || !paperlessToken) throw new Error("Paperless-Verbindung ist nicht konfiguriert");
   const headers = { authorization: `Token ${paperlessToken}`, accept: "application/json" };
+  let analyzerWarning = null;
   const [rawDocuments, correspondents, documentTypes, tags, analyzerDocuments] = await Promise.all([
     fetchPages("/api/documents/", headers),
     fetchPages("/api/correspondents/", headers),
     fetchPages("/api/document_types/", headers),
     fetchPages("/api/tags/", headers),
-    fetchAnalyzerDocuments().catch(error => { console.error("Analyzer-Abgleich fehlgeschlagen:", error.message); return []; }),
+    fetchAnalyzerDocuments().catch(error => { analyzerWarning = "Analyzer nicht erreichbar: Vorhandene Analyseergebnisse wurden beibehalten."; console.error("Analyzer-Abgleich fehlgeschlagen:", error.message); return []; }),
   ]);
   const correspondentNames = new Map(correspondents.map(item => [Number(item.id), item.name ?? ""]));
   const typeNames = new Map(documentTypes.map(item => [Number(item.id), item.name ?? ""]));
   const tagNames = new Map(tags.map(item => [Number(item.id), item.name ?? ""]));
   const analyzerByPaperlessId = new Map(analyzerDocuments.map(item => [Number(item.paperless_id), item]));
-  const existing = new Map(state.documents.map(item => [Number(item.id), item]));
+  const repaired = repairReferences(state.documents, correspondentNames, typeNames);
+  const existing = new Map(repaired.map(item => [Number(item.id), item]));
+  const accountLabels = financialAccountLabels(state.areas);
   const disabledDocumentIds = new Set((state.disabledDocuments ?? []).map(item => Number(item.id)));
   const documents = rawDocuments.filter(item => !disabledDocumentIds.has(Number(item.id))).map(item => {
     const prior = existing.get(Number(item.id));
-    const protectedAssignment = Boolean(prior?.area && prior?.subarea && !["rule", "unassigned"].includes(prior?.assignmentSource));
+    const protectedAssignment = Boolean(prior && (prior.area || prior.subarea || prior.tileId || ["manual", "review"].includes(prior.assignmentSource)));
     const correspondent = referenceName(item.correspondent, correspondentNames);
     const documentType = referenceName(item.document_type, typeNames);
     const documentTags = (item.tags ?? []).map(tag => referenceName(tag, tagNames)).filter(Boolean);
     const analysis = analyzerByPaperlessId.get(Number(item.id));
-    const analysisTitle = String(analysis?.short_title ?? "").trim();
-    const analysisSummary = String(analysis?.summary ?? "").trim();
+    const analysisCorrespondent = readableMetadata(analysis?.correspondent, correspondentNames);
+    const analysisDocumentType = readableMetadata(analysis?.document_type, typeNames);
+    const { title: analysisTitle, summary: analysisSummary } = analyzerPresentation(analysis);
+    const manualMetadata = prior?.metadataSource === "manual";
+    const finalCorrespondent = manualMetadata ? prior.correspondent : analysisCorrespondent || correspondent || readableMetadata(prior?.correspondent, correspondentNames);
+    const finalType = manualMetadata ? prior.type : analysisDocumentType || documentType || readableMetadata(prior?.type, typeNames);
     const paperlessDate = String(item.created ?? item.document_date ?? item.added ?? "").slice(0, 10);
     const enrichment = enrichPaperlessDocument({
       title: item.title ?? "",
       content: item.content ?? "",
-      correspondent: analysis?.correspondent || correspondent,
-      documentType: analysis?.document_type || documentType,
-      analysisSummary: analysis?.summary ?? "",
+      correspondent: finalCorrespondent,
+      documentType: finalType,
+      analysisSummary,
       date: paperlessDate,
     });
-    const effectiveCorrespondent = enrichment.correspondent || analysis?.correspondent || correspondent;
-    const effectiveDocumentType = analysis?.document_type || documentType;
+    const effectiveCorrespondent = manualMetadata ? finalCorrespondent : enrichment.correspondent || finalCorrespondent;
+    const effectiveDocumentType = finalType;
+    const automatic = automaticPresentation(item.title, effectiveDocumentType, effectiveCorrespondent);
+    const isStatement = /konto[\s_-]*(?:\d+[\s_-]*)?auszug/i.test(`${effectiveDocumentType} ${item.title}`);
+    const oldSummary = usablePresentation(prior?.analysisSummary);
+    const oldTitle = usablePresentation(prior?.presentationTitle);
+    const cachedSummary = usablePresentation(prior?.presentationSummary);
+    const genericSummary = `${prior?.type} von ${prior?.correspondent}.`;
+    const usefulCachedSummary = cachedSummary === genericSummary ? "" : cachedSummary;
+    const chosenSummary = isStatement ? enrichment.summary : analysisSummary || oldSummary || enrichment.summary || usefulCachedSummary || automatic.summary;
+    const chosenTitle = isStatement ? enrichment.title : analysisTitle || oldTitle || enrichment.title || automatic.title;
     const suggested = classifyDocument(item, effectiveCorrespondent, effectiveDocumentType, documentTags, {
-      document_type: analysis?.document_type,
-      summary: [analysis?.summary, enrichment.summary].filter(Boolean).join(" "),
+      document_type: analysisDocumentType,
+      summary: [analysisSummary, enrichment.summary].filter(Boolean).join(" "),
     });
+    const secondaryTileIds = [...new Set([
+      ...(Array.isArray(prior?.secondaryTileIds) ? prior.secondaryTileIds.map(String) : []),
+      ...constructionSecondaryTiles(item, effectiveCorrespondent, effectiveDocumentType, [analysisSummary, enrichment.summary].filter(Boolean).join(" ")),
+    ])];
+    const accountLabel = matchedFinancialAccountLabel(accountLabels, [item.title, prior?.sourceTitle, prior?.title, item.content]);
     return {
+      ...prior,
       id: Number(item.id),
       title: prior?.title ?? item.title ?? `Dokument ${item.id}`,
       sourceTitle: item.title ?? "",
-      correspondent: prior?.metadataSource === "manual" ? prior.correspondent : effectiveCorrespondent || prior?.correspondent || "",
-      type: prior?.metadataSource === "manual" ? prior.type : effectiveDocumentType || prior?.type || "",
+      correspondent: effectiveCorrespondent,
+      type: effectiveDocumentType,
       metadataSource: prior?.metadataSource ?? "paperless",
       tags: documentTags,
-      analysisSummary: analysisSummary || prior?.analysisSummary || "",
+      analysisSummary: analysisSummary || oldSummary,
       analysisConfidence: analysis?.confidence ?? prior?.analysisConfidence ?? null,
       analysisKeywords: Array.isArray(analysis?.keywords) ? analysis.keywords.map(String).filter(Boolean) : (prior?.analysisKeywords ?? []),
-      analysisCategory: String(analysis?.category ?? prior?.analysisCategory ?? ""),
+      analysisCategory: textValue(analysis?.category) || textValue(prior?.analysisCategory),
       analysisSearchText: String(analysis?.search_text ?? prior?.analysisSearchText ?? "").slice(0, 8000),
+      duplicateSignature: duplicateSignature(item.content),
+      accountLabel: accountLabel || prior?.accountLabel || "",
       analyzedAt: analysis?.analyzed_at ?? prior?.analyzedAt ?? null,
-      presentationTitle: analysisTitle || enrichment.title || prior?.presentationTitle || "",
-      presentationSummary: analysisSummary || enrichment.summary || prior?.presentationSummary || "",
-      date: enrichment.date || paperlessDate,
+      presentationTitle: chosenTitle,
+      presentationSummary: chosenSummary,
+      presentationSource: isStatement ? "ocr" : analysisSummary || oldSummary ? "analyzer" : enrichment.summary ? "ocr" : "fallback",
+      date: manualMetadata ? prior.date : enrichment.date || paperlessDate,
       added: String(item.added ?? "").slice(0, 19),
       modified: String(item.modified ?? "").slice(0, 19),
       area: protectedAssignment ? prior.area : suggested.area,
       subarea: protectedAssignment ? prior.subarea : suggested.subarea,
       tileId: protectedAssignment ? (prior.tileId ?? "") : "",
-      group: protectedAssignment ? readableGroup(prior.group, effectiveCorrespondent || prior.correspondent) : (effectiveCorrespondent || readableGroup(prior?.group, prior?.correspondent) || ""),
+      secondaryTileIds,
+      group: prior && Object.hasOwn(prior, "group") ? readableGroup(prior.group, effectiveCorrespondent) : effectiveCorrespondent,
       assignmentSource: protectedAssignment ? prior.assignmentSource : suggested.assignmentSource,
       contractStatus: prior?.contractStatus,
       contractStatusManual: prior?.contractStatusManual,
@@ -399,10 +503,12 @@ async function syncPaperless() {
     };
   });
   const seen = new Set(documents.map(item => item.id));
-  for (const prior of state.documents) if (!seen.has(Number(prior.id))) documents.push({ ...prior, present: false });
   documents.sort((a, b) => String(b.date).localeCompare(String(a.date)) || b.id - a.id);
   state.documents = refreshContractStatuses(documents);
-  state.correspondents = [...new Set([...(state.correspondents ?? []), ...correspondents.map(item => item.name ?? ""), ...documents.map(item => item.correspondent ?? "")])].filter(Boolean).sort((a, b) => a.localeCompare(b, "de"));
+  state.disabledDocuments = repairReferences(state.disabledDocuments ?? [], correspondentNames, typeNames);
+  state.migration = { ...(state.migration ?? {}), personalLab26: true, paperlessReferenceNames: true };
+  state.syncWarning = analyzerWarning;
+  state.correspondents = [...new Set([...(state.correspondents ?? []), ...correspondents.map(item => item.name ?? ""), ...documents.map(item => item.correspondent ?? "")].map(value => readableMetadata(value, correspondentNames)).filter(Boolean))].sort((a, b) => a.localeCompare(b, "de"));
   state.lastSync = new Date().toISOString();
   state.syncStatus = "idle";
   state.syncError = null;
@@ -620,7 +726,10 @@ state = await initialState();
 const server = http.createServer(async (request, response) => {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   try {
-    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "2.5.11", documents: state.documents.length, rag: Boolean(paperlessRagUrl) });
+    if (request.method === "POST" && /^\/api\/documents\/\d+\/(?:disable|restore)\/?$/.test(url.pathname) && request.headers["if-match"] !== undefined && request.headers["if-match"] !== state.revision) {
+      return json(response, 409, { error: "Der Datenstand wurde geändert. Bitte zuerst die Seite neu laden." });
+    }
+    if (request.method === "GET" && url.pathname === "/api/health") return json(response, 200, { status: "ok", version: "2.7.2", documents: state.documents.length, rag: Boolean(paperlessRagUrl) });
     const documentAsset = url.pathname.match(/^\/api\/documents\/(\d+)\/(thumbnail|preview)$/);
     if (request.method === "GET" && documentAsset) return proxyPaperlessDocument(response, documentAsset[1], documentAsset[2]);
     const documentDisable = url.pathname.match(/^\/api\/documents\/(\d+)\/disable\/?$/);
@@ -634,6 +743,7 @@ const server = http.createServer(async (request, response) => {
     if (request.method === "PUT" && url.pathname === "/api/state") {
       const incoming = await bodyJson(request);
       if (!Array.isArray(incoming.areas) || !Array.isArray(incoming.documents)) return json(response, 400, { error: "Ungültige Daten" });
+      if (incoming.revision !== state.revision) return json(response, 409, { error: "Der Datenstand wurde inzwischen geändert. Bitte Entwurf sichern und die Seite neu laden." });
       state.areas = incoming.areas;
       const disabledDocumentIds = new Set((state.disabledDocuments ?? []).map(document => Number(document.id)));
       state.documents = refreshContractStatuses(sanitizeDocumentGroups(incoming.documents.filter(document => !disabledDocumentIds.has(Number(document.id)))));
@@ -644,16 +754,26 @@ const server = http.createServer(async (request, response) => {
       if (incoming.energyMetricSelections && typeof incoming.energyMetricSelections === "object") state.energyMetricSelections = normalizeEnergyMetricSelections(incoming.energyMetricSelections);
       if (Array.isArray(incoming.correspondents)) state.correspondents = incoming.correspondents;
       if (Array.isArray(incoming.haSensors)) state.haSensors = incoming.haSensors;
-      await persist();
-      return json(response, 200, { status: "saved" });
+      const revision = await persist();
+      return json(response, 200, { status: "saved", revision });
     }
     if (request.method === "POST" && url.pathname === "/api/documents/assign") {
       const incoming = await bodyJson(request);
       if (!Array.isArray(incoming.ids) || !incoming.area || !incoming.subarea) return json(response, 400, { error: "ids, area und subarea werden benötigt" });
       const ids = new Set(incoming.ids.map(Number));
-      state.documents = state.documents.map(document => ids.has(Number(document.id)) ? { ...document, area: String(incoming.area), subarea: String(incoming.subarea), tileId: String(incoming.tileId ?? ""), group: String(incoming.group ?? ""), assignmentSource: "manual" } : document);
+      const secondaryTileIds = Array.isArray(incoming.secondaryTileIds) ? [...new Set(incoming.secondaryTileIds.map(String).filter(Boolean))] : undefined;
+      state.documents = state.documents.map(document => ids.has(Number(document.id)) ? { ...document, area: String(incoming.area), subarea: String(incoming.subarea), tileId: String(incoming.tileId ?? ""), ...(secondaryTileIds ? { secondaryTileIds } : {}), group: String(incoming.group ?? ""), assignmentSource: "manual" } : document);
       await persist();
       return json(response, 200, { status: "saved", assigned: ids.size });
+    }
+    if (request.method === "POST" && url.pathname === "/api/documents/link") {
+      const incoming = await bodyJson(request);
+      if (!Array.isArray(incoming.ids) || !Array.isArray(incoming.tileIds)) return json(response, 400, { error: "ids und tileIds werden benötigt" });
+      const ids = new Set(incoming.ids.map(Number));
+      const tileIds = [...new Set(incoming.tileIds.map(String).filter(Boolean))];
+      state.documents = state.documents.map(document => ids.has(Number(document.id)) ? { ...document, secondaryTileIds: tileIds } : document);
+      await persist();
+      return json(response, 200, { status: "linked", linked: ids.size, tileIds });
     }
     if (request.method === "POST" && url.pathname === "/api/sync") {
       if (syncPromise) return json(response, 202, { status: "running" });
@@ -691,7 +811,7 @@ const server = http.createServer(async (request, response) => {
 });
 
 server.listen(port, host, () => {
-  console.log(`PersonalLab API läuft auf ${host}:${port}`);
+  console.log(`PersonalLab API läuft auf ${host}:${server.address().port}`);
   if (syncOnStart && paperlessUrl && paperlessToken) startSync().catch(error => console.error("Startabgleich fehlgeschlagen:", error.message));
   if (autoSync && paperlessUrl && paperlessToken) setInterval(() => startSync().catch(error => console.error("Automatischer Abgleich fehlgeschlagen:", error.message)), syncMinutes * 60 * 1000).unref();
 });

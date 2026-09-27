@@ -1,0 +1,22 @@
+FROM node:24-alpine
+
+LABEL org.opencontainers.image.title="PersonalLab Qwen Scanner" \
+      org.opencontainers.image.version="2.2.0" \
+      org.opencontainers.image.description="Scanner mit persistentem Verarbeitungsstand gegen Mehrfachanalysen"
+
+WORKDIR /opt/personallab-qwen-scanner
+COPY qwen-scanner/ ./
+
+RUN addgroup -S personallab \
+    && adduser -S -G personallab -u 10001 personallab \
+    && mkdir -p /data/qwen-scanner /config \
+    && cp navigation-taxonomy-v2.1.json /config/navigation-taxonomy-v2.1.json \
+    && chown -R personallab:personallab /opt/personallab-qwen-scanner /data /config
+
+USER 10001:10001
+VOLUME ["/data", "/config"]
+
+HEALTHCHECK --interval=60s --timeout=5s --start-period=120s --retries=5 \
+  CMD node -e 'const fs=require("fs");const p="/data/qwen-scanner/status.json";if(!fs.existsSync(p))process.exit(1);const s=JSON.parse(fs.readFileSync(p,"utf8"));if(s.state==="error")process.exit(1)'
+
+CMD ["node", "/opt/personallab-qwen-scanner/scanner-daemon.mjs"]

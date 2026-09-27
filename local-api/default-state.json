@@ -1,5 +1,5 @@
 {
-  "version": "2.5.11",
+  "version": "2.7.2",
   "areas": [
     {"id":"health","name":"Gesundheit & Befunde","description":"Befunde, Arztbriefe und gesundheitliche Unterlagen","tone":"teal","icon":"heart","subareas":[
       {"id":"findings","name":"Befunde","hint":"Untersuchungen und Ergebnisse"},

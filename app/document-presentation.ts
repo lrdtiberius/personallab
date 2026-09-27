@@ -26,6 +26,8 @@ function validMonth(value: string | undefined) {
 }
 
 function periodFromTitle(title: string, type: string) {
+  const statementNumber = title.match(/auszug[_\s-]+(20\d{2})[_\s-]+\d{3,}(?:\D|$)/i);
+  if (statementNumber) return { year: statementNumber[1], month: undefined };
   const statement = title.match(/(?:auszug|abrechnung)[^\d]*(20\d{2})[_\s-]+0{0,3}(0?[1-9]|1[0-2])(?:\D|$)/i);
   if (statement) return { year: statement[1], month: validMonth(statement[2]) };
   const monthFirst = title.match(/\b(0?[1-9]|1[0-2])[-_.\s/]((?:19|20)\d{2})\b/);
@@ -70,12 +72,12 @@ function clean(value: string) {
 
 function knownCorrespondent(value: string) {
   const candidate = clean(value);
-  return candidate && !/^Nicht (?:erkannt|eindeutig)/i.test(candidate) ? candidate : "";
+  return candidate && !/^(?:null|undefined|\d+)$/i.test(candidate) && !/^Nicht (?:erkannt|eindeutig)/i.test(candidate) ? candidate : "";
 }
 
 function knownDocumentType(value: string) {
   const candidate = clean(value);
-  return candidate && !/^Nicht (?:erkannt|eindeutig)/i.test(candidate) ? candidate : "";
+  return knownCorrespondent(candidate);
 }
 
 function readableFullDate(date: string) {
@@ -143,7 +145,7 @@ function needsGeneratedTitle(title: string) {
 }
 
 export function documentSummary(document: DocumentPresentationInput, maxLength = 180) {
-  const summary = clean(String(document.presentationSummary || document.analysisSummary || ""));
+  const summary = [document.presentationSummary, document.analysisSummary].map(value => clean(String(value ?? ""))).find(value => value && !/^(?:null|undefined)$/i.test(value)) || "";
   if (!summary) {
     const type = knownDocumentType(String(document.type ?? "")) || "Dokument";
     const correspondent = knownCorrespondent(String(document.correspondent ?? ""));
@@ -182,10 +184,11 @@ export function sortDocumentsByDate<T extends DocumentPresentationInput>(documen
 }
 
 export function friendlyDocumentTitle(document: DocumentPresentationInput) {
+  if (document.metadataSource === "manual" && document.title) return document.title;
   const title = clean(String(document.title ?? ""));
   const presentationTitle = clean(String(document.presentationTitle ?? ""));
-  if (presentationTitle && document.metadataSource !== "manual") return presentationTitle;
-  const type = clean(String(document.type ?? "")) || "Dokument";
+  if (presentationTitle && !/^(?:null|undefined)$/i.test(presentationTitle) && document.metadataSource !== "manual") return presentationTitle;
+  const type = knownDocumentType(String(document.type ?? "")) || "Dokument";
   const correspondent = knownCorrespondent(String(document.correspondent ?? ""));
   const period = documentPeriod(document);
   const periodLabel = period ? `${period.month ? `${monthNames[period.month - 1]} ` : ""}${period.year}` : readableDate(String(document.date ?? ""));

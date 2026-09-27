@@ -1,6 +1,6 @@
 export function cleanCorrespondentName(value) {
   const name = String(value ?? "").trim();
-  if (!name || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(name)) return "Nicht erkannt";
+  if (!name || /^(?:\d+|null|undefined)$/i.test(name) || /^Nicht (?:eindeutig|erkannt)(?:\s|$)/i.test(name)) return "Nicht erkannt";
   return name;
 }
 
